@@ -1,10 +1,19 @@
 import logging
 import logging.handlers
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # Define the custom logger
 logger = logging.getLogger('DropboxBackupLogger')
+
 level = logging.INFO
+if os.environ.get("DEBUG_LEVEL"):
+    try:
+        level = getattr(logging, os.environ.get("DEBUG_LEVEL"))
+    except Exception:
+        level = logging.INFO
+    
 logger.setLevel(level)
 
 # Define the custom log format

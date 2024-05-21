@@ -4,3 +4,4 @@ pid
 
 # Testing
 pytest
+pytest-cov

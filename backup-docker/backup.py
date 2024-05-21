@@ -53,7 +53,7 @@ class DropboxClient:
     def __init__(self, dbx):
         self.dbx = dbx
 
-    def upload(self, file_path, dropbox_path):
+    def upload(self, file_path, dropbox_path): # pragma: no cover
         with open(file_path, 'rb') as f:
             logger.info(f"Uploading {file_path} to Dropbox as {dropbox_path}...")
             try:
@@ -108,8 +108,13 @@ def monitor_and_upload(dropbox_client):
             new_checksums[file_name] = file_md5
             if old_checksums.get(file_name) != file_md5:
                 dropbox_path = os.path.join(DROPBOX_FOLDER, file_name)
+                logger.info("Calling upload")
+                logger.info(file_path)
+                logger.info(dropbox_path)
                 dropbox_client.upload(file_path, dropbox_path)
                 logger.info(f"Uploaded {file_name} to Dropbox.")
+            else:
+                logger.debug(f"File stayed the same:{file_name}")
 
     # Write new checksums to file
     write_checksums(checksums_file, new_checksums)
@@ -132,7 +137,7 @@ def main(): # pragma: no cover
     logger.info("Done!")
 
 if __name__ == "__main__": # pragma: no cover
-    logger.info("Starting up...")
+    logger.info("Starting up up...")
     while True:
         with pid.PidFile():
             main()

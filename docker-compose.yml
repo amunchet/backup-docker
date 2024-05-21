@@ -5,6 +5,8 @@ services:
     build: ./backup-docker
     container_name: dropbox-backup
     restart: always
+    environment:
+      DEBUG_LEVEL: WARNING
     env_file: 
       - ./backup-docker/.env
     volumes:

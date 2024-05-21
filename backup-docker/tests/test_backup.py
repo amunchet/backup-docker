@@ -1,9 +1,10 @@
 import os
 import tempfile
-import hashlib
 import pytest
+import hashlib
 from unittest.mock import MagicMock
 from backup import calculate_md5, read_checksums, write_checksums, monitor_and_upload, DropboxClient
+import backup
 
 # Test calculate_md5 function
 def test_calculate_md5():
@@ -38,31 +39,34 @@ def test_monitor_and_upload(monkeypatch):
     with tempfile.TemporaryDirectory() as temp_dir:
         file1_path = os.path.join(temp_dir, "file1")
         file2_path = os.path.join(temp_dir, "file2")
+        checksums_file = os.path.join(temp_dir, "checksums.txt")
+        
         with open(file1_path, "w") as f:
             f.write("test data 1")
         with open(file2_path, "w") as f:
             f.write("test data 2")
-
-        # Initial checksums file
-        checksums_file = os.path.join(temp_dir, "checksums.txt")
         with open(checksums_file, "w") as f:
-            f.write(f"file1 {calculate_md5(file1_path)}\n")
+            f.write(f"file1 {backup.calculate_md5(file1_path)}\n")
 
         dropbox_client = MagicMock()
 
         # Mock environment variables
-        monkeypatch.setenv("WATCH_FOLDER", temp_dir)
-        monkeypatch.setenv("DROPBOX_FOLDER", "/dropbox_folder")
+        backup.WATCH_FOLDER = temp_dir
+        backup.DROPBOX_FOLDER = "/dropbox_folder"
 
-        monitor_and_upload(dropbox_client)
+        backup.monitor_and_upload(dropbox_client)
 
         # Ensure that file2 was uploaded
-        dropbox_client.upload.assert_called_with(file2_path, "/dropbox_folder/file2")
-
-        # Ensure checksums.txt is updated
+        dropbox_client.upload.assert_any_call(file2_path, os.path.join("/dropbox_folder", "file2"))
+        
+        # Ensure that checksums.txt was uploaded
+        dropbox_client.upload.assert_any_call(checksums_file, os.path.join("/dropbox_folder", "checksums.txt"))
+        
+        # Ensure checksums.txt is updated with new checksums
         with open(checksums_file, "r") as f:
             lines = f.readlines()
-            assert len(lines) == 2
-            assert lines[0].startswith("file1")
-            assert lines[1].startswith("file2")
-
+            assert len(lines) == 3
+            splits = [x.split(" ")[0] for x in lines]
+            assert "checksums.txt" in splits
+            assert "file1" in splits
+            assert "file2" in splits
