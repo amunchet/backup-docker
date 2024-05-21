@@ -23,7 +23,7 @@ APP_KEY = os.getenv("APP_KEY")
 APP_SECRET = os.getenv("APP_SECRET")
 
 # Function to refresh the Dropbox access token
-def refresh_access_token():
+def refresh_access_token(): # pragma: no cover
     token_url = "https://api.dropbox.com/oauth2/token"
     logger.debug(DROPBOX_REFRESH_TOKEN)
     data = {
@@ -114,7 +114,7 @@ def monitor_and_upload(dropbox_client):
     # Write new checksums to file
     write_checksums(checksums_file, new_checksums)
 
-def main():
+def main(): # pragma: no cover
     if not WATCH_FOLDER or not DROPBOX_FOLDER or not DROPBOX_TOKEN or not DROPBOX_REFRESH_TOKEN or not APP_KEY or not APP_SECRET:
         logger.error("Please set WATCH_FOLDER, DROPBOX_FOLDER, DROPBOX_TOKEN, DROPBOX_REFRESH_TOKEN, APP_KEY, and APP_SECRET environment variables.")
         sys.exit(1)
@@ -131,7 +131,7 @@ def main():
     monitor_and_upload(dropbox_client)
     logger.info("Done!")
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     logger.info("Starting up...")
     while True:
         with pid.PidFile():
