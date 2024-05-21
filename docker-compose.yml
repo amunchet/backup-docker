@@ -1,0 +1,12 @@
+version: '3'
+
+services:
+  dropbox-backup:
+    build: ./backup-docker
+    container_name: dropbox-backup
+    restart: always
+    env_file: 
+      - ./backup-docker/.env
+    volumes:
+      - ./backup-docker/temp:/app/temp
+    
