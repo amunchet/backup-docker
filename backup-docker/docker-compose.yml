@@ -1,14 +1,12 @@
-version: '3'
+version: '3.8'
 
 services:
   dropbox-backup:
-    build: ./backup-docker
+    build: .
     container_name: dropbox-backup
     restart: always
     environment:
       DEBUG_LEVEL: WARNING
-    env_file: 
-      - ./backup-docker/.env
     volumes:
       - ./backup-docker/temp:/app/temp
-    
+      - ${WATCH_FOLDER}:/backup

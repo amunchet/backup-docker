@@ -15,7 +15,8 @@ from backup_logger import logger
 load_dotenv()
 
 # Environment variables
-WATCH_FOLDER = os.getenv("WATCH_FOLDER")
+# WATCH_FOLDER = os.getenv("WATCH_FOLDER")
+WATCH_FOLDER = "/backup"
 DROPBOX_FOLDER = os.getenv("DROPBOX_FOLDER")
 DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
