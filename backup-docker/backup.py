@@ -22,31 +22,7 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 APP_KEY = os.getenv("APP_KEY")
 APP_SECRET = os.getenv("APP_SECRET")
 
-# Function to refresh the Dropbox access token
-def refresh_access_token(): # pragma: no cover
-    token_url = "https://api.dropbox.com/oauth2/token"
-    logger.debug(DROPBOX_REFRESH_TOKEN)
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": DROPBOX_REFRESH_TOKEN,
-        "client_id": APP_KEY,
-        "client_secret": APP_SECRET,
-    }
 
-    response = requests.post(token_url, data=data)
-    if response.status_code != 200:
-        logger.error(response.text)
-        sys.exit("ERROR: Unable to refresh access token.")
-
-    tokens = response.json()
-    new_access_token = tokens['access_token']
-
-    # Update the environment variable and .env file
-    os.environ["DROPBOX_TOKEN"] = new_access_token
-    with open(".env", "a") as env_file:
-        env_file.write(f"DROPBOX_TOKEN={new_access_token}\n")
-
-    return new_access_token
 
 # Dropbox client abstraction
 class DropboxClient:
@@ -124,17 +100,17 @@ def main(): # pragma: no cover
         logger.error("Please set WATCH_FOLDER, DROPBOX_FOLDER, DROPBOX_TOKEN, DROPBOX_REFRESH_TOKEN, APP_KEY, and APP_SECRET environment variables.")
         sys.exit(1)
 
-    try:
-        dbx = dropbox.Dropbox(DROPBOX_TOKEN)
+    with dropbox.Dropbox(
+        oauth2_access_token= DROPBOX_TOKEN,
+        oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
+        app_key = APP_KEY,
+        app_secret = APP_SECRET
+    ) as dbx:
         dbx.users_get_current_account()
-    except AuthError:
-        # Refresh the access token if it's expired
-        new_token = refresh_access_token()
-        dbx = dropbox.Dropbox(new_token)
-
-    dropbox_client = DropboxClient(dbx)
-    monitor_and_upload(dropbox_client)
-    logger.info("Done!")
+        
+        dropbox_client = DropboxClient(dbx)
+        monitor_and_upload(dropbox_client)
+        logger.info("Done!")
 
 if __name__ == "__main__": # pragma: no cover
     logger.info("Starting up up...")
