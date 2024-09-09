@@ -60,7 +60,10 @@ def read_checksums(file_path):
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
             for line in f:
-                file_name, file_md5 = line.strip().split()
+                splits = line.strip().split()
+                file_md5 = splits[-1]
+                file_name = line.replace(file_md5, "").strip()
+                # file_name, file_md5 = line.strip().split()
                 checksums[file_name] = file_md5
     return checksums
 
