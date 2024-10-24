@@ -37,13 +37,14 @@ class DropboxClient:
                 self.dbx.files_upload(f.read(), dropbox_path, mode=WriteMode('overwrite'))
             except ApiError as err:
                 if err.error.is_path() and err.error.get_path().reason.is_insufficient_space():
-                    sys.exit("ERROR: Cannot back up; insufficient space.")
+                    logger.error("ERROR: Cannot back up; insufficient space.")
+                    raise err
                 elif err.user_message_text:
                     logger.error(err.user_message_text)
-                    sys.exit()
+                    raise err
                 else:
                     logger.error(err)
-                    sys.exit()
+                    raise err
 
 # Function to calculate the MD5 checksum of a file
 def calculate_md5(file_path):
@@ -59,7 +60,10 @@ def read_checksums(file_path):
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
             for line in f:
-                file_name, file_md5 = line.strip().split()
+                splits = line.strip().split()
+                file_md5 = splits[-1]
+                file_name = line.replace(file_md5, "").strip()
+                # file_name, file_md5 = line.strip().split()
                 checksums[file_name] = file_md5
     return checksums
 
