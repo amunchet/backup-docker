@@ -115,8 +115,9 @@ def main(): # pragma: no cover
 
 if __name__ == "__main__": # pragma: no cover
     logger.info("Starting up up...")
-    while True:
-        with pid.PidFile():
+
+    with pid.PidFile():
+        while True:
             main()
             logger.info("Sleeping...")
             time.sleep(60)
