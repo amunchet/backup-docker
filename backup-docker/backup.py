@@ -79,11 +79,19 @@ def monitor_and_upload(dropbox_client):
     # Read existing checksums
     old_checksums = read_checksums(checksums_file)
     new_checksums = {}
+    
+    # Load ignore file
+    ignore_file = os.path.join(WATCH_FOLDER, "ignore.txt")
+    ignore = []
+    if os.path.exists(ignore_file):
+        with open(ignore_file) as f:
+            ignore = [x.strip() for x in f.readlines()]
+
 
     # Calculate new checksums and compare with old ones
     for file_name in os.listdir(WATCH_FOLDER):
         file_path = os.path.join(WATCH_FOLDER, file_name)
-        if os.path.isfile(file_path):
+        if os.path.isfile(file_path) and file_name not in ignore:
             file_md5 = calculate_md5(file_path)
             new_checksums[file_name] = file_md5
             if old_checksums.get(file_name) != file_md5:
