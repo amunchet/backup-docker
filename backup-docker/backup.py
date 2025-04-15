@@ -16,6 +16,9 @@ load_dotenv()
 
 # Environment variables
 WATCH_FOLDER = os.getenv("WATCH_FOLDER") or "/backup"
+if os.getenv("DOCKER"):
+    WATCH_FOLDER = "/backup"
+
 DROPBOX_FOLDER = os.getenv("DROPBOX_FOLDER")
 DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -126,9 +129,16 @@ def main(): # pragma: no cover
 
 if __name__ == "__main__": # pragma: no cover
     logger.info("Starting up up...")
-    time.sleep(10)
-    with pid.PidFile():
+    def inner_main():
         while True:
             main()
             logger.info("Sleeping...")
             time.sleep(60)
+    if os.getenv("DOCKER"):
+        print("In a Docker, ignoring PID...")
+        inner_main()
+    else:
+        print("Starting up with PID handler...")
+        with pid.PidFile():
+            inner_main()
+        
