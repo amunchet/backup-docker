@@ -2,3 +2,4 @@
 venv/**
 **/*.pyc
 backup-docker/temp/**
+backup-docker-**

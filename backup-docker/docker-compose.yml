@@ -6,7 +6,6 @@ services:
     container_name: dropbox-backup
     restart: always
     environment:
-      DEBUG_LEVEL: WARNING
       DOCKER: 1
     volumes:
       - ./backup-docker/temp:/app/temp

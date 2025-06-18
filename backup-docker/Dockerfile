@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . /app/
 
 # Set the default command to run the backup script
-CMD ["python", "backup.py"]
+CMD ["python", "main.py"]

@@ -152,18 +152,4 @@ def main(): # pragma: no cover
         monitor_and_upload(dropbox_client)
         logger.info("Done!")
 
-if __name__ == "__main__": # pragma: no cover
-    logger.info("Starting up up...")
-    def inner_main():
-        while True:
-            main()
-            logger.info("Sleeping...")
-            time.sleep(60)
-    if os.getenv("DOCKER"):
-        print("In a Docker, ignoring PID...")
-        inner_main()
-    else:
-        print("Starting up with PID handler...")
-        with pid.PidFile():
-            inner_main()
-        
+       
