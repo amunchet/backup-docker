@@ -53,6 +53,15 @@ def conditional_download(dbx, dropbox_path):
         with open(local_path, "wb") as f:
             f.write(remote_data)
 
+        # Run post-download hook with the file path
+        try:
+            if os.path.exists("post-download-hook.sh"):
+                logger.info("Running post-download-hook.sh...")
+                subprocess.run(["post-download-hook.sh", local_path], check=True)
+                logger.info(f"Post-download hook ran on {local_path}")
+        except subprocess.CalledProcessError as hook_err:
+            logger.error(f"Hook script failed: {hook_err}")
+
     except Exception as e:
         logger.error(f"Failed to download {dropbox_path}: {e}")
 

@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# Check if file path was provided
+if [ -z "$1" ]; then
+  echo "No file provided"
+  exit 1
+fi
+
+# Run the sed command on the given file
+sed -i.bak 's/GENERATED ALWAYS AS .* VIRTUAL/NOT NULL/' "$1"
+sed -i.bak "s/''{/'{/" "$1"
+
