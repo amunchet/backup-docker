@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import hashlib
 import dropbox
@@ -57,7 +58,7 @@ def conditional_download(dbx, dropbox_path):
         try:
             if os.path.exists("post-download-hook.sh"):
                 logger.info("Running post-download-hook.sh...")
-                subprocess.run(["post-download-hook.sh", local_path], check=True)
+                subprocess.run(["/bin/bash", "post-download-hook.sh", local_path], check=True)
                 logger.info(f"Post-download hook ran on {local_path}")
         except subprocess.CalledProcessError as hook_err:
             logger.error(f"Hook script failed: {hook_err}")
