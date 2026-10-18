@@ -1,0 +1,13 @@
+# Runs on caddy-auth0's Docker network, with no published ports, so the only
+# way in is through Caddy and its Auth0 checks.
+services:
+  dropbox-mcp:
+    build: .
+    container_name: dropbox-mcp
+    restart: unless-stopped
+    env_file: .env
+    networks: [caddy-auth0]
+
+networks:
+  caddy-auth0:
+    external: true

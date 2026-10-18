@@ -3,3 +3,5 @@ venv/**
 **/*.pyc
 backup-docker/temp/**
 backup-docker-**
+__pycache__/
+.pytest_cache/
