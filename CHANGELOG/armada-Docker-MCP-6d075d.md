@@ -15,3 +15,12 @@ Rewrote restore (`backup-docker/restore.py`). It now copies the whole Dropbox fo
 
 ## 2026-10-19 16:50 CDT
 Consolidated backup-docker around a shared `common.py` (settings, logging, Dropbox client, ignore patterns) and fixed bugs found on the way. Backup no longer refuses to start without the undocumented `DROPBOX_TOKEN`. Failed uploads are retried instead of being recorded as done. A misspelled `SYNC_DIRECTION` stops with an error instead of silently restoring. A failed pass is logged and retried instead of crashing the container. Logging to `/var/log` is now opt-in (`LOG_FILE`), so non-root runs don't crash. Time travel uses the Dropbox SDK like the rest, and `--list N` now shows N revisions instead of one. `main.py --once` runs a single pass. Docker: `.env` is no longer baked into the image (passed with `env_file`), the image is Python 3.13, and the stale `temp` mount and fixed container name are gone. The stale backup tests are fixed, and new ones cover restore, time travel and the main loop.
+
+## 2026-10-19 16:50 CDT
+Added an interactive `./setup.py` that replaces the broken setuptools stub and the two `obtain_refresh_token` scripts. It needs only Python 3. It links Dropbox in one step with no redirect URI, asking only for the permissions each part needs (the MCP server gets write access only when folders are writable). It writes each part's `.env`, checks that the Dropbox and local folders exist, lists shared folders with the `ns:` paths to use for them, and prints the Caddy, Auth0 and LibreChat steps for the MCP server. `./setup.py check` re-tests saved settings.
+
+## 2026-10-19 16:50 CDT
+Rewrote the README as one step-by-step guide: creating the Dropbox app (access type and the five permissions), backup and restore setup, how folders map into Docker, shared folders, the post-download hook, time travel, several folders, running under systemd or cron, the MCP server behind caddy-auth0, a settings reference and troubleshooting. Removed the placeholder `systemd/` folder; the README has a working unit instead. Added a root `run_tests.sh` for all suites.
+
+## 2026-10-19 16:50 CDT
+The MCP server now always requires `WRITE_PERMISSION` for writes. An empty value means the default `dropbox:write`, instead of silently turning the check off.

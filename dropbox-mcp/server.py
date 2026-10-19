@@ -34,8 +34,8 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_TEAM_SPACE = os.getenv("DROPBOX_TEAM_SPACE", "").lower() in ("1", "true", "yes")
 # Comma-separated Dropbox folders (or files) that may be written to.
 WRITABLE_PATHS = [p.strip() for p in os.getenv("WRITABLE_PATHS", "").split(",") if p.strip()]
-# Permission the caller needs (from caddy-auth0) to write. Empty disables the check.
-WRITE_PERMISSION = os.getenv("WRITE_PERMISSION", "dropbox:write")
+# Permission the caller needs (from caddy-auth0) to write.
+WRITE_PERMISSION = os.getenv("WRITE_PERMISSION") or "dropbox:write"
 MAX_READ_BYTES = int(os.getenv("MAX_READ_BYTES") or 10 * 1024 * 1024)
 LIST_LIMIT = int(os.getenv("LIST_LIMIT") or 2000)
 
@@ -118,7 +118,7 @@ def account_info(ctx: Context) -> dict:
         "team_space": DROPBOX_TEAM_SPACE,
         "caller": who,
         "writable_paths": WRITABLE_PATHS,
-        "caller_can_write": bool(WRITABLE_PATHS) and (not WRITE_PERMISSION or WRITE_PERMISSION in who["permissions"]),
+        "caller_can_write": bool(WRITABLE_PATHS) and WRITE_PERMISSION in who["permissions"],
     }
 
 
@@ -218,7 +218,7 @@ def write_file(path: str, content: str, ctx: Context, encoding: Literal["text", 
         raise ToolError("Give the file's full path, e.g. '/Shared/Team/notes.txt'.")
     if not is_writable(path):
         raise ToolError(f"{path} is read-only. Writable paths: {', '.join(WRITABLE_PATHS) or 'none'}.")
-    if WRITE_PERMISSION and WRITE_PERMISSION not in caller(ctx)["permissions"]:
+    if WRITE_PERMISSION not in caller(ctx)["permissions"]:
         raise ToolError(f"Writing needs the '{WRITE_PERMISSION}' permission.")
     data = base64.b64decode(content) if encoding == "base64" else content.encode("utf-8")
     mode = WriteMode.overwrite if overwrite else WriteMode.add

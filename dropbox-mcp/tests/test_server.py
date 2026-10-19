@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import importlib
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -165,3 +166,9 @@ def test_tools_are_registered_with_read_only_hints():
                           "list_shared_folders", "write_file"}
     assert all(t.annotations.read_only_hint for name, t in tools.items() if name != "write_file")
     assert tools["write_file"].annotations.read_only_hint is False
+
+
+def test_empty_write_permission_still_requires_the_default(monkeypatch):
+    monkeypatch.setenv("WRITE_PERMISSION", "")
+    importlib.reload(server)
+    assert server.WRITE_PERMISSION == "dropbox:write"
