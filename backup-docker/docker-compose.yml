@@ -1,12 +1,12 @@
 version: '3'
 
+# Keeps WATCH_FOLDER (a folder on this machine) in sync with DROPBOX_FOLDER.
+# Settings are in .env, which ../setup.py backup writes. Inside the container
+# the folder is always /backup.
 services:
   dropbox-backup:
     build: .
-    container_name: dropbox-backup
-    restart: always
-    environment:
-      DOCKER: 1
+    restart: unless-stopped
+    env_file: .env
     volumes:
-      - ./backup-docker/temp:/app/temp
-      - ${WATCH_FOLDER}:/backup
+      - ${WATCH_FOLDER:?Set WATCH_FOLDER in .env - run ../setup.py backup}:/backup

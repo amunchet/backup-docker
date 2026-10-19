@@ -1,18 +1,8 @@
-# Use the official Python image from the Docker Hub
-FROM python:3.8
-
-# Set environment variables
-ENV PYTHONUNBUFFERED 1
-
-# Create and set the working directory
+FROM python:3.13-slim
+ENV PYTHONUNBUFFERED=1 DOCKER=1
 WORKDIR /app
-
-# Copy the requirements.txt file and install the dependencies
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application files to the working directory
+# Includes post-download-hook.sh, if you made one; rebuild after changing it.
 COPY . /app/
-
-# Set the default command to run the backup script
 CMD ["python", "main.py"]
