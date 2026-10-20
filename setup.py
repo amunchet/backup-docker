@@ -99,11 +99,11 @@ def oauth(env, **form):
                 {"Authorization": f"Basic {auth}"})
 
 
-def api(token, route, body=None, team_root=None):
-    """Call a Dropbox API route, with paths relative to the team's root folder if `team_root` is given."""
+def api(token, route, body=None, root=None):
+    """Call a Dropbox API route, with paths relative to `root` (a Dropbox-API-Path-Root value) if given."""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    if team_root:
-        headers["Dropbox-API-Path-Root"] = json.dumps({".tag": "root", "root": team_root})
+    if root:
+        headers["Dropbox-API-Path-Root"] = json.dumps(root)
     return post(f"https://api.dropboxapi.com/2/{route}", json.dumps(body).encode(), headers)
 
 
@@ -115,8 +115,14 @@ def connect(env):
 
 def folder_problem(token, path, team_root=None):
     """None if `path` is a folder in Dropbox, otherwise Dropbox's complaint (e.g. "path/not_found/")."""
+    # Calls only reach inside the folder they're rooted at: yours, or the team's with team_root. A shared
+    # or team folder outside it (ns:<id>/...) is reached by rooting the call at that folder instead.
+    root = team_root and {".tag": "root", "root": team_root}
+    if path.startswith("ns:"):
+        namespace, _, path = path[3:].partition("/")
+        root, path = {".tag": "namespace_id", "namespace_id": namespace}, "/" + path
     try:
-        api(token, "files/list_folder", {"path": "" if path == "/" else path, "limit": 1}, team_root)
+        api(token, "files/list_folder", {"path": "" if path == "/" else path, "limit": 1}, root)
     except DropboxError as e:
         return str(e)
 
@@ -182,7 +188,9 @@ def print_shared(token):
     print("Shared folders (use the path on the left):")
     for folder in sorted(folders.values(), key=lambda f: f["name"].lower()):
         path = folder.get("path_display") or f"ns:{folder['shared_folder_id']}"
-        note = "" if folder.get("path_display") else ", not added to your Dropbox"
+        note = ""
+        if not folder.get("path_display"):
+            note = ", team folder" if folder.get("is_team_folder") else ", not added to your Dropbox"
         print(f"  {path:<40} {folder['name']} ({folder['access_type']['.tag']}{note})")
 
 
@@ -371,8 +379,8 @@ def setup_mcp():
     ask_app(env)
 
     print("\nMCP clients can read all of Dropbox, and write only inside the folders you list here.")
-    print("Use paths like /Shared/Team, or ns:<id> for shared folders that aren't in your Dropbox")
-    print("(./setup.py shared lists them). Enter - for none.")
+    print("Use paths like /Shared/Team, or ns:<id> for team folders and shared folders that aren't")
+    print("in your Dropbox (./setup.py shared lists them). Enter - for none.")
     was_writable = bool(env.get("WRITABLE_PATHS"))
     answer = ask("Writable folders, comma-separated", env.get("WRITABLE_PATHS", "-"))
     env["WRITABLE_PATHS"] = "" if answer == "-" else ",".join(p.strip() for p in answer.split(",") if p.strip())

@@ -22,7 +22,7 @@ import argparse
 import sys
 from datetime import datetime, timezone
 
-from common import dropbox_client, logger
+from common import dropbox_client, logger, rooted
 
 
 def parse_date(date_str: str) -> datetime:
@@ -85,7 +85,7 @@ def find_revision(dbx, path, on_or_before, size=None, nth=1, per_page=100, max_p
 def main():
     """Command line: find a revision by date, list or show it, and restore it with --execute."""
     ap = argparse.ArgumentParser(description="Restore a Dropbox file to the version it had on a date.")
-    ap.add_argument("path", help="Dropbox file path, e.g. /folder/file.ext (or ns:<id>/file.ext in a shared folder)")
+    ap.add_argument("path", help="Dropbox file path, e.g. /folder/file.ext (or ns:<id>/file.ext in a shared or team folder)")
     ap.add_argument("--date", required=True, type=parse_date,
                     help="Target date (on/before). Format YYYY-MM-DD (end-of-day UTC) or full ISO.")
     ap.add_argument("--size", type=int, default=None,
@@ -101,10 +101,10 @@ def main():
     args = ap.parse_args()
 
     nth = max(1, args.nth)
-    dbx = dropbox_client()
+    dbx, path = rooted(dropbox_client(), args.path)
     try:
         chosen, matches, pages, oldest_seen = find_revision(
-            dbx, args.path, args.date, size=args.size, nth=max(nth, args.list),
+            dbx, path, args.date, size=args.size, nth=max(nth, args.list),
             per_page=max(1, min(100, args.per_page)), max_pages=args.max_pages,
         )
     except Exception as e:
@@ -150,7 +150,7 @@ def main():
         return
 
     try:
-        restored = dbx.files_restore(args.path, chosen.rev)
+        restored = dbx.files_restore(path, chosen.rev)
     except Exception as e:
         logger.error(f"Error during restore: {e}")
         sys.exit(2)

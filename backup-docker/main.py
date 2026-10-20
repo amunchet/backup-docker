@@ -16,7 +16,7 @@ from dropbox.exceptions import DropboxException
 
 import backup
 import restore
-from common import DROPBOX_FOLDER, WATCH_FOLDER, dropbox_client, logger
+from common import DROPBOX_FOLDER, WATCH_FOLDER, dropbox_client, logger, rooted
 
 SLEEP_TIME = int(os.getenv("SLEEP_TIME") or 60)
 SYNC_DIRECTION = (os.getenv("SYNC_DIRECTION") or "BACKUP").upper()
@@ -39,13 +39,14 @@ def main():
     arrow = "->" if SYNC_DIRECTION == "BACKUP" else "<-"
     logger.info(f"{SYNC_DIRECTION}: {WATCH_FOLDER} {arrow} Dropbox {DROPBOX_FOLDER} ({account.email}), every {SLEEP_TIME}s")
     sync = backup.monitor_and_upload if SYNC_DIRECTION == "BACKUP" else restore.sync_down
+    dbx, folder = rooted(dbx, DROPBOX_FOLDER.rstrip("/"))
 
     if "--once" in sys.argv:
-        sync(dbx)
+        sync(dbx, folder)
         return
     while True:
         try:
-            sync(dbx)
+            sync(dbx, folder)
         except Exception:
             # e.g. the network was down; the next pass tries again.
             logger.exception(f"{SYNC_DIRECTION} pass failed")

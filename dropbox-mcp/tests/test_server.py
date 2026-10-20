@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from dropbox.common import PathRoot
 from dropbox.files import FileMetadata, FolderMetadata, ListFolderResult
 from dropbox.sharing import AccessLevel
 from mcp.server.mcpserver.exceptions import ToolError
@@ -28,7 +29,8 @@ def ctx(*permissions):
 @pytest.fixture
 def dbx(monkeypatch):
     client = MagicMock()
-    monkeypatch.setattr(server, "dbx", lambda: client)
+    client.at = {"42": MagicMock()}  # clients rooted at a shared or team folder, by its namespace ID
+    monkeypatch.setattr(server, "dbx", lambda namespace="": client.at[namespace] if namespace else client)
     monkeypatch.setattr(server, "WRITABLE_PATHS", ["/Shared/Team", "ns:42"])
     monkeypatch.setattr(server, "WRITE_PERMISSION", "dropbox:write")
     return client
@@ -80,15 +82,40 @@ def test_list_folder_pages_and_flags_writable(dbx):
     assert readme["type"] == "file" and readme["writable"] is False
 
 
-def test_list_folder_in_unmounted_shared_folder_builds_paths(dbx):
-    # Entries in a namespace that isn't mounted come back without path_display.
-    entry = file_md("/x.txt")
-    entry.path_display = None
-    entry.path_lower = None
-    dbx.files_list_folder.return_value = ListFolderResult(entries=[entry], cursor="c", has_more=False)
+def test_ns_paths_are_reached_from_their_folder_and_come_back_as_ns_paths(dbx):
+    """Team folders, and shared folders not added to the account: Dropbox only reaches them rooted at them."""
+    no_path = file_md("/Sub/y.txt")
+    no_path.path_display = no_path.path_lower = None
+    dbx.at["42"].files_list_folder.return_value = ListFolderResult(
+        entries=[file_md("/Sub/x.txt"), no_path], cursor="c", has_more=False)
 
-    [e] = server.list_folder("ns:42")["entries"]
-    assert e["path"] == "ns:42/x.txt" and e["writable"] is True
+    x, y = server.list_folder("ns:42/Sub/")["entries"]
+
+    dbx.at["42"].files_list_folder.assert_called_once_with("/Sub", recursive=False, limit=2000)
+    dbx.files_list_folder.assert_not_called()
+    assert (x["path"], y["path"], x["writable"]) == ("ns:42/Sub/x.txt", "ns:42/Sub/y.txt", True)
+
+    dbx.at["42"].files_upload.return_value = file_md("/notes.txt")
+    assert server.write_file("ns:42/notes.txt", "hi", ctx("dropbox:write"))["path"] == "ns:42/notes.txt"
+    assert dbx.at["42"].files_upload.call_args.args == (b"hi", "/notes.txt")
+
+    dbx.at["42"].files_search_v2.return_value = SimpleNamespace(
+        matches=[SimpleNamespace(metadata=SimpleNamespace(get_metadata=lambda: file_md("/Sub/x.txt")))])
+    [found] = server.search("x", "ns:42")
+    assert found["path"] == "ns:42/Sub/x.txt"
+    assert dbx.at["42"].files_search_v2.call_args.kwargs["options"].path is None  # the whole folder
+
+
+def test_ns_clients_are_rooted_at_their_folder(monkeypatch):
+    for name in ("APP_KEY", "APP_SECRET", "DROPBOX_REFRESH_TOKEN"):
+        monkeypatch.setattr(server, name, "x")
+    monkeypatch.setattr(server.dropbox, "Dropbox", MagicMock())
+    server.dbx.cache_clear()
+    try:
+        assert server.dbx("42") is server.dbx("42")  # kept, so it refreshes its access token only when it expires
+        server.dropbox.Dropbox.return_value.with_path_root.assert_called_once_with(PathRoot.namespace_id("42"))
+    finally:
+        server.dbx.cache_clear()
 
 
 def test_read_file_text_image_and_binary(dbx):

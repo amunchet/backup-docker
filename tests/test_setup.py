@@ -17,7 +17,9 @@ class FakeDropbox:
 
     def __init__(self):
         self.codes = {"good-code": "refresh-1", "second-code": "refresh-2"}
-        self.folders = {"/Backups/server1", "/Shared/Team", "ns:42"}
+        # Like Dropbox, calls only reach inside the folder they're rooted at: your own folder by
+        # default, or a shared or team folder outside it (here namespace 42) when rooted at that.
+        self.folders = {None: {"/Backups/server1", "/Shared/Team"}, "42": {"", "/Sub"}}
         self.authorized = []
 
     def __call__(self, url, data, headers):
@@ -36,7 +38,8 @@ class FakeDropbox:
         if route == "users/get_current_account":
             return {"email": "me@example.com", "name": {"display_name": "Me"}, "root_info": {"root_namespace_id": "7"}}
         if route == "files/list_folder":
-            if body["path"] in self.folders:
+            root = json.loads(headers.get("Dropbox-API-Path-Root", "{}"))
+            if body["path"] in self.folders.get(root.get("namespace_id"), ()):
                 return {"entries": []}
             raise setup.DropboxError("path/not_found/")
         if route == "sharing/list_folders":
@@ -45,7 +48,9 @@ class FakeDropbox:
         if route == "sharing/list_folders/continue":
             return {"entries": [{"name": "Clients", "shared_folder_id": "42", "access_type": {".tag": "viewer"}}]}
         if route == "sharing/list_mountable_folders":
-            return {"entries": [{"name": "Clients", "shared_folder_id": "42", "access_type": {".tag": "viewer"}}]}
+            return {"entries": [{"name": "Clients", "shared_folder_id": "42", "access_type": {".tag": "viewer"}},
+                                {"name": "Engineering", "shared_folder_id": "43", "access_type": {".tag": "editor"},
+                                 "is_team_folder": True}]}
         raise AssertionError(f"unexpected route {route}")
 
 
@@ -92,6 +97,19 @@ def test_backup_setup_links_dropbox_and_writes_env(dropbox, tmp_path, monkeypatc
     assert urllib.parse.urlencode({"scope": setup.BACKUP_SCOPES}) in out
     assert "didn't accept that" in out
     assert "ns:42" in out and "/Shared/Team" in out  # shared folders listed for a restore
+    assert "Clients (viewer, not added to your Dropbox)" in out and "Engineering (editor, team folder)" in out
+
+
+def test_restore_setup_reaches_a_folder_outside_yours_by_its_ns_path(dropbox, tmp_path, monkeypatch, capsys):
+    """A team folder, or a shared folder not added to your Dropbox, as ./setup.py shared lists it."""
+    left = answer(monkeypatch, "key", "secret", "good-code", "restore", str(tmp_path / "restored"),
+                  "/Sub", "ns:42/Missing", "ns:42/Sub/", "600")
+    setup.setup_backup(setup.BACKUP_DIR)
+    assert left == []
+    assert setup.read_env(tmp_path / "backup-docker" / ".env")["DROPBOX_FOLDER"] == "ns:42/Sub"
+    out = capsys.readouterr().out
+    assert out.count("That doesn't work: path/not_found/") == 2 and "Found it in Dropbox." in out
+    assert setup.folder_problem("token", "ns:42") is None
 
 
 def test_backup_setup_keeps_a_working_link_and_other_settings(dropbox, tmp_path, monkeypatch):

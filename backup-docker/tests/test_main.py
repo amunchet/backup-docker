@@ -2,9 +2,10 @@ import fcntl
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
+from dropbox.common import PathRoot
 from dropbox.exceptions import BadInputError
 
 import backup
@@ -54,6 +55,23 @@ def test_refused_credentials_stop_with_a_hint(settings, monkeypatch):
         main.main()
     assert "invalid_client" in exit.value.code and "setup.py check" in exit.value.code
     assert not any(p.called for p in settings.values())
+
+
+@pytest.mark.parametrize("folder, namespace, path", [
+    ("/Backups/", None, "/Backups"),
+    ("/", None, ""),
+    # A team folder, or a shared folder not added to your Dropbox: Dropbox only reaches
+    # it with calls rooted at it, so it isn't found as a path from your own folder.
+    ("ns:42", "42", ""),
+    ("ns:42/Sub/", "42", "/Sub"),
+])
+def test_passes_reach_the_folder_from_the_right_root(settings, monkeypatch, folder, namespace, path):
+    dbx = MagicMock()
+    monkeypatch.setattr(main, "dropbox_client", lambda: dbx)
+    monkeypatch.setattr(main, "DROPBOX_FOLDER", folder)
+    main.main()
+    assert dbx.with_path_root.call_args_list == ([call(PathRoot.namespace_id(namespace))] if namespace else [])
+    settings["backup"].assert_called_once_with(dbx.with_path_root.return_value if namespace else dbx, path)
 
 
 def test_a_failed_pass_does_not_stop_the_loop(settings, monkeypatch):
