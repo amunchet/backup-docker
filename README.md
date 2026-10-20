@@ -330,6 +330,8 @@ dropbox-mcp is an MCP server (Streamable HTTP, at `/mcp`) that gives clients suc
 | `list_shared_folders` | Every shared folder the account can reach, including ones not added to it |
 | `write_file` | Create a file, or replace one with `overwrite`, inside a writable folder. The only tool that changes anything. |
 
+It keeps no copy of your files, so unlike Part A it needs no Docker volume. Each tool call is a live request to the Dropbox API over the internet, made with the app key, app secret and refresh token that setup saves in `dropbox-mcp/.env`.
+
 The server has no login of its own. caddy-auth0 sits in front of it: it checks each caller's token and passes on who they are and their Auth0 permissions. Every caller sees the same Dropbox account, the one you link in setup. Auth0 decides who may use the server, not whose Dropbox it opens.
 
 ### B1. Have caddy-auth0 running

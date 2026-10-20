@@ -1,5 +1,6 @@
 # Runs on caddy-auth0's Docker network, with no published ports, so the only
-# way in is through Caddy and its Auth0 checks.
+# way in is through Caddy and its Auth0 checks. It has no volumes because it
+# keeps no files: each request goes to the Dropbox API, using the keys in .env.
 services:
   dropbox-mcp:
     build: .
