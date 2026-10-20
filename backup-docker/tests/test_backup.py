@@ -11,7 +11,6 @@ from backup import calculate_md5, read_checksums, write_checksums
 @pytest.fixture
 def watch(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "WATCH_FOLDER", str(tmp_path))
-    monkeypatch.setattr(backup, "DROPBOX_FOLDER", "/dropbox_folder/")
     return tmp_path
 
 
@@ -46,14 +45,14 @@ def test_monitor_and_upload_uploads_new_and_nested_files_only(watch):
     write_checksums(watch / "checksums.txt", {"file1": calculate_md5(watch / "file1")})
     dbx = MagicMock()
 
-    backup.monitor_and_upload(dbx)
+    backup.monitor_and_upload(dbx, "/dropbox_folder")
 
     assert uploaded_paths(dbx) == ["/dropbox_folder/file2", "/dropbox_folder/sub/dir/file 3.txt"]
     assert dbx.files_upload.call_args.kwargs["mode"] == WriteMode.overwrite
     assert set(read_checksums(watch / "checksums.txt")) == {"file1", "file2", "sub/dir/file 3.txt"}
 
     dbx.reset_mock()
-    backup.monitor_and_upload(dbx)
+    backup.monitor_and_upload(dbx, "/dropbox_folder")
     dbx.files_upload.assert_not_called()
 
 
@@ -62,10 +61,10 @@ def test_failed_upload_is_retried_next_pass(watch):
     dbx = MagicMock()
     dbx.files_upload.side_effect = [ConnectionError("network down"), None]
 
-    backup.monitor_and_upload(dbx)
+    backup.monitor_and_upload(dbx, "/dropbox_folder")
     assert read_checksums(watch / "checksums.txt") == {}
 
-    backup.monitor_and_upload(dbx)
+    backup.monitor_and_upload(dbx, "/dropbox_folder")
     assert dbx.files_upload.call_count == 2
     assert set(read_checksums(watch / "checksums.txt")) == {"file"}
 

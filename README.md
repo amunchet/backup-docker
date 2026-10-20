@@ -216,10 +216,10 @@ Run the Docker commands in `backup-docker/`. The service commands work anywhere,
 
 ### Restoring a shared folder
 
-A folder someone shared with you can be restored like any other. What to use as the Dropbox folder depends on whether it's added to your Dropbox:
+A folder someone shared with you, or a team folder, can be restored like any other. What to use as the Dropbox folder depends on where it is:
 
-- **Added to your Dropbox**, so it shows in your file list: use its path, e.g. `/Team Docs`.
-- **Not added**, or a team folder in a Dropbox Business team space: use `ns:<id>`, e.g. `ns:1234567890`.
+- **In your own folder**, so it shows in your file list: use its path, e.g. `/Team Docs`.
+- **Outside it**: a team folder, or a shared folder that isn't added to your Dropbox. Use `ns:<id>`, e.g. `ns:1234567890`, or `ns:1234567890/Drawings` for a folder inside it. Dropbox can't find these by a path from your own folder, so an `ns:` path makes each request start at that folder instead.
 
 `./setup.py shared` lists every shared folder you can reach, with the path to use for each:
 
@@ -227,9 +227,10 @@ A folder someone shared with you can be restored like any other. What to use as 
 Shared folders (use the path on the left):
   /Team Docs                               Team Docs (editor)
   ns:1234567890                            Client Files (viewer, not added to your Dropbox)
+  ns:2345678901                            Engineering (editor, team folder)
 ```
 
-Setup also shows this list when you choose `restore`. You can back up *into* a shared folder too, if you have edit access.
+Setup also shows this list when you choose `restore`. You can back up *into* a shared folder too, if you have edit access. Dropbox only lets apps write into a shared folder once it's added to your Dropbox, so add it first (on dropbox.com, under Shared). Team folders don't need adding.
 
 ### Post-download hook
 
@@ -310,7 +311,7 @@ Only one copy runs at a time for each folder. A second copy, e.g. a cron pass wh
 | `DROPBOX_REFRESH_TOKEN` | The Dropbox link; setup gets it | (setup) |
 | `SYNC_DIRECTION` | `BACKUP`: this folder goes to Dropbox. `RESTORE`: the Dropbox folder comes here. | `BACKUP` |
 | `WATCH_FOLDER` | The folder on this machine. Docker mounts it at `/backup`; the systemd service uses it directly. | required |
-| `DROPBOX_FOLDER` | The Dropbox folder: `/path`, `ns:<id>` for a shared folder, or `/` for all of Dropbox | required |
+| `DROPBOX_FOLDER` | The Dropbox folder: `/path`, `ns:<id>` or `ns:<id>/path` for a team folder or a shared folder outside your own ([details](#restoring-a-shared-folder)), or `/` for all of Dropbox | required |
 | `SLEEP_TIME` | Seconds between passes | `60` |
 | `DEBUG_LEVEL` | `DEBUG` logs every skipped and unchanged file | `INFO` |
 | `LOG_FILE` | Also write the log to this file, which rotates at 10 MB. In Docker the path is inside the container. | none |
@@ -404,7 +405,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 
 ### Reading and writing
 
-- **Paths** look like `/Folder/file.txt`, and `""` is the top of your Dropbox. A shared folder that isn't added to your Dropbox is `ns:<id>/...`; `list_shared_folders` and `./setup.py shared` show the ids. With team folders at the top level (`DROPBOX_TEAM_SPACE=true`), paths start at the team's root, and your own files are under `/<your name>`.
+- **Paths** look like `/Folder/file.txt`, and `""` is the top of your Dropbox. A team folder, or a shared folder that isn't added to your Dropbox, is `ns:<id>/...`; `list_shared_folders` and `./setup.py shared` show the ids. With team folders at the top level (`DROPBOX_TEAM_SPACE=true`), paths start at the team's root, and your own files are under `/<your name>`.
 - **Everything is read-only** except inside `WRITABLE_PATHS`. Matching ignores case, as Dropbox does, and paths with `..` are refused.
 - **A folder has two forms.** A shared folder added to your Dropbox can be written to by its path (`/Team Docs`) only if that form is listed, and by its `ns:` form only if that form is listed.
 - **A write needs both** a writable path and the caller's `dropbox:write` permission. Caddy can't tell reads from writes, because every MCP call is a `POST /mcp`, so the server checks the permission itself.
@@ -440,7 +441,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 | The service log says *Dropbox refused the saved settings* | Run `./setup.py service` again. It shows what's wrong and asks for new settings. |
 | The log says *already running* | Something else is syncing this folder, e.g. a cron job or a `main.py` you started. Only one may run at a time. |
 | The logs say *SYNC_DIRECTION must be BACKUP or RESTORE* | Fix the spelling in `.env`, or run setup again. |
-| A restore of a shared folder finds nothing | If the folder isn't added to your Dropbox, use its `ns:` path from `./setup.py shared`. |
+| A shared or team folder's path gives *path/not_found* | If it isn't in your own folder, use its `ns:` path from `./setup.py shared`. |
 | Restored files belong to root | Docker runs as root. Use `chown`, or [run it as a systemd service](#a3-or-run-it-as-a-systemd-service), which runs as you. |
 | Changes to `post-download-hook.sh` have no effect | Rebuild: `docker compose up -d --build`. |
 | The logs say *Failed to upload ... insufficient_space* | Your Dropbox is full. Failed files are retried every pass. |

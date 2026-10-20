@@ -1,6 +1,6 @@
 """
 Backup: uploads new and changed files from WATCH_FOLDER, subfolders included, to
-the same place under DROPBOX_FOLDER.
+the same place under the Dropbox folder.
 
 - Remembers each file's MD5 in WATCH_FOLDER/checksums.txt and uploads only changes
 - Skips anything matching a pattern in WATCH_FOLDER/ignore.txt (e.g. "*.tmp", "cache/*")
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from dropbox.files import CommitInfo, UploadSessionCursor, WriteMode
 
-from common import DROPBOX_FOLDER, WATCH_FOLDER, is_ignored, load_ignore_patterns, logger
+from common import WATCH_FOLDER, is_ignored, load_ignore_patterns, logger
 
 CHUNK_SIZE = 4 * 1024 * 1024  # files bigger than this are uploaded in pieces
 
@@ -82,8 +82,8 @@ def write_checksums(file_path, checksums: dict) -> None:
             f.write(f"{file_md5} {relpath}\n")
 
 
-def monitor_and_upload(dbx) -> None:
-    """Upload every file under WATCH_FOLDER that changed since the last pass."""
+def monitor_and_upload(dbx, folder: str) -> None:
+    """Upload every file under WATCH_FOLDER that changed since the last pass, to the same place under `folder`."""
     root = Path(WATCH_FOLDER).resolve()
     checksums_file = root / "checksums.txt"
     old_checksums = read_checksums(checksums_file)
@@ -104,10 +104,9 @@ def monitor_and_upload(dbx) -> None:
             new_checksums[relpath] = file_md5
             continue
 
-        dropbox_path = f"{DROPBOX_FOLDER.rstrip('/')}/{relpath}"
         try:
-            logger.info(f"Uploading changed file: {relpath} -> {dropbox_path}")
-            upload(dbx, path, dropbox_path)
+            logger.info(f"Uploading changed file: {relpath}")
+            upload(dbx, path, f"{folder}/{relpath}")
         except Exception as e:
             # Leaving its checksum out means the file is tried again next pass.
             logger.error(f"Failed to upload {relpath}: {e}")

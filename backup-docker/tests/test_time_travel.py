@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from dropbox.common import PathRoot
 from dropbox.files import FileMetadata
 
 import time_travel
@@ -81,3 +82,13 @@ def test_no_match_exits_with_1(monkeypatch, capsys):
     with pytest.raises(SystemExit) as exit:
         run(monkeypatch, capsys, "--date", "2025-08-01", "--execute")
     assert exit.value.code == 1
+
+
+def test_a_file_in_a_shared_or_team_folder_is_reached_from_that_folder(monkeypatch, capsys):
+    dbx = MagicMock()
+    in_folder = dbx.with_path_root.return_value = fake_dropbox()
+    monkeypatch.setattr(time_travel, "dropbox_client", lambda: dbx)
+    monkeypatch.setattr(sys, "argv", ["time_travel.py", "ns:42/Work/report.docx", "--date", "2025-09-07", "--execute"])
+    time_travel.main()
+    dbx.with_path_root.assert_called_once_with(PathRoot.namespace_id("42"))
+    in_folder.files_restore.assert_called_once_with("/Work/report.docx", f"{7:09x}")

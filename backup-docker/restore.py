@@ -1,8 +1,8 @@
 """
-Restore: downloads DROPBOX_FOLDER, subfolders included, into WATCH_FOLDER.
+Restore: downloads a Dropbox folder, subfolders included, into WATCH_FOLDER.
 
 - Works with shared folders: use their path in your Dropbox, or ns:<shared_folder_id>
-  for one that isn't added to your Dropbox (`./setup.py shared` lists them)
+  for a team folder or one that isn't added to your Dropbox (`./setup.py shared` lists them)
 - Downloads only files that are new or changed in Dropbox since they were last
   downloaded, which it remembers in WATCH_FOLDER/.restore-state.json
 - Skips anything matching a pattern in WATCH_FOLDER/ignore.txt (e.g. "*.mp4", "old/*")
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from dropbox.files import FileMetadata, FolderMetadata
 
-from common import DROPBOX_FOLDER, WATCH_FOLDER, is_ignored, load_ignore_patterns, logger
+from common import WATCH_FOLDER, is_ignored, load_ignore_patterns, logger
 
 HOOK = Path(__file__).with_name("post-download-hook.sh")
 
@@ -34,9 +34,8 @@ def content_hash(path: Path) -> str:
 def list_files(dbx, folder: str):
     """
     Yield (path relative to `folder`, metadata) for every file under `folder`.
-    Lists one folder at a time rather than recursively, because a recursive listing
-    has no paths inside shared folders that aren't added to your Dropbox, and only
-    the last part of a Dropbox path is sure to have the right capitalization.
+    Lists one folder at a time rather than recursively, because only the last part
+    of a Dropbox path is sure to have the right capitalization.
     """
     pending = [""]
     while pending:
@@ -53,14 +52,13 @@ def list_files(dbx, folder: str):
             result = dbx.files_list_folder_continue(result.cursor)
 
 
-def sync_down(dbx) -> None:
-    """Download every file in DROPBOX_FOLDER that is new or changed since the last pass."""
+def sync_down(dbx, folder: str) -> None:
+    """Download every file in `folder` that is new or changed since the last pass."""
     root = Path(WATCH_FOLDER)
     root.mkdir(parents=True, exist_ok=True)
     state_file = root / ".restore-state.json"
     state = json.loads(state_file.read_text()) if state_file.exists() else {}
     ignore_patterns = load_ignore_patterns(root)
-    folder = DROPBOX_FOLDER.rstrip("/")
     downloaded = failed = unchanged = 0
 
     try:
@@ -79,14 +77,14 @@ def sync_down(dbx) -> None:
                 continue
 
             try:
-                logger.info(f"Downloading {folder}/{relpath}")
+                logger.info(f"Downloading {relpath}")
                 local.parent.mkdir(parents=True, exist_ok=True)
                 # Download beside it and swap it in, so nothing ever sees half a file.
                 partial = local.with_name(f".{local.name}.download")
                 dbx.files_download_to_file(str(partial), f"{folder}/{relpath}")
                 os.replace(partial, local)
             except Exception as e:
-                logger.error(f"Failed to download {folder}/{relpath}: {e}")
+                logger.error(f"Failed to download {relpath}: {e}")
                 failed += 1
                 continue
             state[relpath] = entry.content_hash

@@ -45,16 +45,18 @@ mcp = MCPServer(
     "dropbox",
     instructions=(
         "Read files in the user's Dropbox, including shared folders. Paths look like "
-        "'/Folder/file.txt'; '' is the root. Shared folders that aren't in the user's "
-        "Dropbox are reached as 'ns:<shared_folder_id>/...' (see list_shared_folders). "
+        "'/Folder/file.txt'; '' is the root. Team folders and shared folders that aren't in "
+        "the user's Dropbox are reached as 'ns:<shared_folder_id>/...' (see list_shared_folders). "
         "Everything is read-only except the folders listed by account_info."
     ),
 )
 
 
 @functools.cache
-def dbx() -> dropbox.Dropbox:
-    """The Dropbox client, created on first use."""
+def dbx(namespace: str = "") -> dropbox.Dropbox:
+    """The Dropbox client, created on first use; with `namespace`, one rooted at that shared or team folder."""
+    if namespace:
+        return dbx().with_path_root(PathRoot.namespace_id(namespace))
     if not (APP_KEY and APP_SECRET and DROPBOX_REFRESH_TOKEN):
         raise ToolError("Server misconfigured: set APP_KEY, APP_SECRET and DROPBOX_REFRESH_TOKEN.")
     client = dropbox.Dropbox(oauth2_refresh_token=DROPBOX_REFRESH_TOKEN, app_key=APP_KEY, app_secret=APP_SECRET)
@@ -78,15 +80,27 @@ def clean(path: str) -> str:
     return prefix + ("" if path == "/" else path)
 
 
+def locate(path: str):
+    """
+    (client, path within its root, prefix for the paths it returns) for a clean path. Calls only
+    reach inside the folder they're rooted at, so a shared or team folder outside it (ns:<id>/...)
+    is reached by rooting calls at that folder, and the paths that come back are relative to it.
+    """
+    if not path.startswith("ns:"):
+        return dbx(), path, ""
+    prefix, _, rest = path.partition("/")
+    return dbx(prefix[3:]), "/" + rest if rest else "", prefix
+
+
 def is_writable(path: str) -> bool:
     """True if the path is inside one of WRITABLE_PATHS (case-insensitive, like Dropbox)."""
     path = clean(path).lower()
     return any(path == w or path.startswith(w + "/") for w in (clean(w).lower() for w in WRITABLE_PATHS))
 
 
-def describe(entry, fallback_path: str | None = None) -> dict:
-    """The parts of Dropbox metadata worth showing a model."""
-    path = entry.path_display or fallback_path or entry.id
+def describe(entry, prefix: str = "", fallback_path: str | None = None) -> dict:
+    """The parts of Dropbox metadata worth showing a model, with `prefix` from locate() on its path."""
+    path = prefix + entry.path_display if entry.path_display else fallback_path or entry.id
     out = {"name": entry.name, "path": path, "id": entry.id}
     if isinstance(entry, FileMetadata):
         out.update(type="file", size=entry.size, modified=entry.server_modified.isoformat() + "Z")
@@ -126,14 +140,15 @@ def account_info(ctx: Context) -> dict:
 def list_folder(path: str = "", recursive: bool = False) -> dict:
     """List a folder's files and subfolders. Use recursive=True to include everything below it."""
     path = clean(path)
-    result = dbx().files_list_folder(path, recursive=recursive, limit=min(LIST_LIMIT, 2000))
+    client, inner, prefix = locate(path)
+    result = client.files_list_folder(inner, recursive=recursive, limit=min(LIST_LIMIT, 2000))
     entries = list(result.entries)
     while result.has_more and len(entries) < LIST_LIMIT:
-        result = dbx().files_list_folder_continue(result.cursor)
+        result = client.files_list_folder_continue(result.cursor)
         entries.extend(result.entries)
     return {
         "path": path,
-        "entries": [describe(e, None if recursive else f"{path}/{e.name}") for e in entries[:LIST_LIMIT]],
+        "entries": [describe(e, prefix, None if recursive else f"{path}/{e.name}") for e in entries[:LIST_LIMIT]],
         "truncated": len(entries) > LIST_LIMIT or result.has_more,
     }
 
@@ -141,15 +156,18 @@ def list_folder(path: str = "", recursive: bool = False) -> dict:
 @mcp.tool(annotations=READ_ONLY)
 def search(query: str, path: str = "", max_results: int = 50) -> list[dict]:
     """Search file and folder names and contents, optionally only under `path`."""
-    options = SearchOptions(path=clean(path) or None, max_results=max(1, min(max_results, 1000)))
-    result = dbx().files_search_v2(query, options=options)
-    return [describe(m.metadata.get_metadata()) for m in result.matches]
+    client, inner, prefix = locate(clean(path))
+    options = SearchOptions(path=inner or None, max_results=max(1, min(max_results, 1000)))
+    result = client.files_search_v2(query, options=options)
+    return [describe(m.metadata.get_metadata(), prefix) for m in result.matches]
 
 
 @mcp.tool(annotations=READ_ONLY)
 def get_metadata(path: str) -> dict:
     """Show details of one file or folder."""
-    return describe(dbx().files_get_metadata(clean(path)), clean(path))
+    path = clean(path)
+    client, inner, prefix = locate(path)
+    return describe(client.files_get_metadata(inner), prefix, path)
 
 
 @mcp.tool(annotations=READ_ONLY, structured_output=False)
@@ -158,10 +176,11 @@ def read_file(path: str, encoding: Literal["auto", "base64"] = "auto") -> str | 
     Read a file. encoding="auto" returns text, or the image itself for images;
     "base64" returns any file's bytes base64-encoded.
     """
-    meta, response = dbx().files_download(clean(path))
+    client, inner, _ = locate(clean(path))
+    meta, response = client.files_download(inner)
     if meta.size > MAX_READ_BYTES:
         response.close()
-        raise ToolError(f"{meta.path_display} is {meta.size} bytes; the limit is {MAX_READ_BYTES}.")
+        raise ToolError(f"{meta.name} is {meta.size} bytes; the limit is {MAX_READ_BYTES}.")
     data = response.content
     if encoding == "base64":
         return base64.b64encode(data).decode()
@@ -222,7 +241,8 @@ def write_file(path: str, content: str, ctx: Context, encoding: Literal["text", 
         raise ToolError(f"Writing needs the '{WRITE_PERMISSION}' permission.")
     data = base64.b64decode(content) if encoding == "base64" else content.encode("utf-8")
     mode = WriteMode.overwrite if overwrite else WriteMode.add
-    return describe(dbx().files_upload(data, path, mode=mode, autorename=False))
+    client, inner, prefix = locate(path)
+    return describe(client.files_upload(data, inner, mode=mode, autorename=False), prefix)
 
 
 if __name__ == "__main__":  # pragma: no cover

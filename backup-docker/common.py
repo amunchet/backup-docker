@@ -11,6 +11,7 @@ from pathlib import Path
 
 import dropbox
 from dotenv import load_dotenv
+from dropbox.common import PathRoot
 
 load_dotenv(Path(__file__).with_name(".env"))
 
@@ -39,6 +40,18 @@ def dropbox_client() -> dropbox.Dropbox:
     if not (APP_KEY and APP_SECRET and DROPBOX_REFRESH_TOKEN):
         sys.exit("Set APP_KEY, APP_SECRET and DROPBOX_REFRESH_TOKEN in .env (./setup.py backup does this).")
     return dropbox.Dropbox(oauth2_refresh_token=DROPBOX_REFRESH_TOKEN, app_key=APP_KEY, app_secret=APP_SECRET)
+
+
+def rooted(dbx: dropbox.Dropbox, path: str):
+    """
+    The client and path to reach a Dropbox path with. Calls only reach inside the folder
+    they're rooted at, your own by default, so a shared or team folder outside it
+    (ns:<id>/...) is reached by rooting calls at that folder instead.
+    """
+    if not path.startswith("ns:"):
+        return dbx, path
+    namespace, _, rest = path[3:].partition("/")
+    return dbx.with_path_root(PathRoot.namespace_id(namespace)), f"/{rest}" if rest else ""
 
 
 def load_ignore_patterns(root: Path) -> list:
