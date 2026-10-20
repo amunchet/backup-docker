@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Dropbox MCP server: read-only access to a Dropbox account, including shared
-folders, with writes allowed only under the paths listed in WRITABLE_PATHS.
+folders, or to just one folder of it (DROPBOX_FOLDER), with writes allowed only
+under the paths listed in WRITABLE_PATHS.
 
 Runs behind caddy-auth0 (https://github.com/amunchet/caddy-auth0), which
 authenticates the caller and passes their permissions in X-Auth-Permissions.
@@ -30,9 +31,12 @@ load_dotenv()
 APP_KEY = os.getenv("APP_KEY")
 APP_SECRET = os.getenv("APP_SECRET")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
+# The only folder clients can read, which is then their top level (''): a path, or ns:<id>/path
+# in a team folder or shared folder. Unset means all of Dropbox.
+DROPBOX_FOLDER = os.getenv("DROPBOX_FOLDER", "").strip().rstrip("/")
 # Use the team's root namespace, so team folders appear at the top level.
 DROPBOX_TEAM_SPACE = os.getenv("DROPBOX_TEAM_SPACE", "").lower() in ("1", "true", "yes")
-# Comma-separated Dropbox folders (or files) that may be written to.
+# Comma-separated Dropbox folders (or files) that may be written to, inside DROPBOX_FOLDER if it's set.
 WRITABLE_PATHS = [p.strip() for p in os.getenv("WRITABLE_PATHS", "").split(",") if p.strip()]
 # Permission the caller needs (from caddy-auth0) to write.
 WRITE_PERMISSION = os.getenv("WRITE_PERMISSION") or "dropbox:write"
@@ -44,11 +48,12 @@ READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 mcp = MCPServer(
     "dropbox",
     instructions=(
+        "Read files in one folder of the user's Dropbox. Paths look like '/Folder/file.txt'; '' is "
+        "the top of the folder. " if DROPBOX_FOLDER else
         "Read files in the user's Dropbox, including shared folders. Paths look like "
         "'/Folder/file.txt'; '' is the root. Team folders and shared folders that aren't in "
         "the user's Dropbox are reached as 'ns:<shared_folder_id>/...' (see list_shared_folders). "
-        "Everything is read-only except the folders listed by account_info."
-    ),
+    ) + "Everything is read-only except the folders listed by account_info.",
 )
 
 
@@ -82,14 +87,19 @@ def clean(path: str) -> str:
 
 def locate(path: str):
     """
-    (client, path within its root, prefix for the paths it returns) for a clean path. Calls only
-    reach inside the folder they're rooted at, so a shared or team folder outside it (ns:<id>/...)
+    (client, path within its root, prefix for the paths it returns) for a clean path. Every call
+    goes through here, and with DROPBOX_FOLDER set, every path is inside it. Calls only reach
+    inside the folder they're rooted at, so a shared or team folder outside it (ns:<id>/...)
     is reached by rooting calls at that folder, and the paths that come back are relative to it.
     """
+    if DROPBOX_FOLDER:
+        if path and not path.startswith("/"):  # ns:, id: and rev: paths could lead anywhere
+            raise ToolError("Only paths inside this server's folder work, like '/Folder/file.txt'; '' is its top.")
+        path = DROPBOX_FOLDER + path
     if not path.startswith("ns:"):
         return dbx(), path, ""
     prefix, _, rest = path.partition("/")
-    return dbx(prefix[3:]), "/" + rest if rest else "", prefix
+    return dbx(prefix[3:]), "/" + rest if rest else "", "" if DROPBOX_FOLDER else prefix
 
 
 def is_writable(path: str) -> bool:
@@ -100,7 +110,11 @@ def is_writable(path: str) -> bool:
 
 def describe(entry, prefix: str = "", fallback_path: str | None = None) -> dict:
     """The parts of Dropbox metadata worth showing a model, with `prefix` from locate() on its path."""
-    path = prefix + entry.path_display if entry.path_display else fallback_path or entry.id
+    path = fallback_path or entry.id
+    if entry.path_display:
+        # Clients' paths start at DROPBOX_FOLDER, so leave off the folders leading to it (one per '/' in it).
+        parts = entry.path_display.split("/")[1 + DROPBOX_FOLDER.count("/"):]
+        path = prefix + "".join("/" + part for part in parts)
     out = {"name": entry.name, "path": path, "id": entry.id}
     if isinstance(entry, FileMetadata):
         out.update(type="file", size=entry.size, modified=entry.server_modified.isoformat() + "Z")
@@ -124,11 +138,12 @@ def caller(ctx: Context) -> dict:
 
 @mcp.tool(annotations=READ_ONLY)
 def account_info(ctx: Context) -> dict:
-    """Show the Dropbox account, who is calling, and which paths are writable."""
+    """Show the Dropbox account, the folder clients see as '', who is calling, and which paths are writable."""
     account = dbx().users_get_current_account()
     who = caller(ctx)
     return {
         "dropbox_account": {"name": account.name.display_name, "email": account.email},
+        "folder": DROPBOX_FOLDER or "/",
         "team_space": DROPBOX_TEAM_SPACE,
         "caller": who,
         "writable_paths": WRITABLE_PATHS,
@@ -224,6 +239,11 @@ def list_shared_folders() -> list[dict]:
             "writable": is_writable(path),
         })
     return sorted(out, key=lambda f: f["name"].lower())
+
+
+# Limited to one folder, the names of all the others stay hidden too.
+if DROPBOX_FOLDER:
+    mcp.remove_tool("list_shared_folders")
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False))

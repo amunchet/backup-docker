@@ -40,3 +40,14 @@ Added `./setup.py service`, a guided installer that runs backup-docker as a syst
 
 ## 2026-10-19 21:10 CDT
 Fixed `ns:<id>` folders: team folders, and shared folders not added to the account, are now reachable. Before, every `ns:` path got *path/not_found*, so they could be neither restored nor chosen in setup (reported with a Dropbox Business team folder). Dropbox only reaches what is inside the folder a request is rooted at, which is the user's own folder by default, so an `ns:` path given as a plain path can't reach anything outside it. Requests for an `ns:<id>/...` path now set `Dropbox-API-Path-Root` to that namespace (`namespace_id` mode) and use the rest as the path. This applies to setup's folder checks, backup and restore passes (rooted once at startup and handed the folder), `time_travel.py`, and every dropbox-mcp tool, which also maps returned paths back to the `ns:` form. `./setup.py shared` now labels team folders as such. The test fakes model Dropbox's rooting, so the old behavior fails them. The README states that apps can write into a shared folder only once it is added to the account.
+
+## 2026-10-20 18:48 CDT
+Added `DROPBOX_FOLDER` to dropbox-mcp, which limits MCP clients to one Dropbox folder. It can be a path, or `ns:<id>/path` in a team folder or in a shared folder not added to the account.
+- **Confined at one point:** that folder becomes the clients' top level (`""`). Every call is confined to it in `locate()`, which every tool goes through:
+  - clients' paths are joined under it;
+  - `ns:`, `id:` and `rev:` paths, which could point anywhere, are refused;
+  - searches are scoped to it;
+  - returned paths drop the folders above it.
+- **Hidden and writable:** `list_shared_folders` isn't offered, so other folders' names stay hidden. `WRITABLE_PATHS` become paths inside the folder.
+- **Setup:** `./setup.py mcp` asks for the folder, asking again until Dropbox finds it. It skips the team-root question when a folder is given and accepts `ns://<id>` as typed. `./setup.py check` tests the folder.
+- **Testing:** unit tests, plus the real server run over MCP against a fake Dropbox, where every call stayed inside the folder. Not yet tried against a real Dropbox account.

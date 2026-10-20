@@ -139,7 +139,7 @@ def test_backup_setup_refuses_a_missing_folder_to_back_up(dropbox, tmp_path, mon
 def test_mcp_setup_relinks_with_write_permission_when_folders_become_writable(dropbox, tmp_path, monkeypatch, capsys):
     env_file = tmp_path / "dropbox-mcp" / ".env"
     env_file.write_text("APP_KEY=key\nAPP_SECRET=secret\nDROPBOX_REFRESH_TOKEN=refresh-1\nWRITABLE_PATHS=\n")
-    left = answer(monkeypatch, "", "", "/Shared/Team, ns:42", "", "n", "second-code", "files.example.com")
+    left = answer(monkeypatch, "", "", "", "/Shared/Team, ns:42", "", "n", "second-code", "files.example.com")
 
     setup.setup_mcp()
 
@@ -155,12 +155,33 @@ def test_mcp_setup_relinks_with_write_permission_when_folders_become_writable(dr
 
 
 def test_mcp_setup_read_only_never_asks_for_write_access(dropbox, tmp_path, monkeypatch, capsys):
-    left = answer(monkeypatch, "key", "secret", "", "", "good-code", "")
+    left = answer(monkeypatch, "key", "secret", "", "", "", "good-code", "")
     setup.setup_mcp()
     assert left == []
     env = setup.read_env(tmp_path / "dropbox-mcp" / ".env")
     assert (env["WRITABLE_PATHS"], env["WRITE_PERMISSION"]) == ("", "dropbox:write")
     assert urllib.parse.urlencode({"scope": setup.MCP_SCOPES}) + "\n" in capsys.readouterr().out  # no write scope
+
+
+def test_mcp_setup_can_limit_clients_to_one_folder(dropbox, tmp_path, monkeypatch, capsys):
+    """Here a team folder, as ./setup.py shared lists it; writable folders are then inside it."""
+    left = answer(monkeypatch, "key", "secret", "ns://42/Missing/", "/Sub", "", "good-code", "ns:42", "")
+
+    setup.setup_mcp()
+
+    assert left == []  # and no question about team folders at the top level
+    env = setup.read_env(tmp_path / "dropbox-mcp" / ".env")
+    assert (env["DROPBOX_FOLDER"], env["WRITABLE_PATHS"], env["DROPBOX_TEAM_SPACE"]) == ("ns:42", "/Sub", "false")
+    out = capsys.readouterr().out
+    assert "ns:42/Missing doesn't work: path/not_found/" in out and "Found ns:42 in Dropbox." in out
+    assert "Writable folder" not in out  # ns:42/Sub exists
+
+
+@pytest.mark.parametrize("typed, path", [
+    ("Backups/server1/", "/Backups/server1"), ("/", ""), ("ns:42", "ns:42"), ("ns://42/Sub/", "ns:42/Sub"),
+])
+def test_dropbox_path_tidies_what_was_typed(typed, path):
+    assert setup.dropbox_path(typed) == path
 
 
 def test_wrong_app_secret_stops_with_a_hint(dropbox, monkeypatch):
@@ -182,6 +203,18 @@ def test_check_reports_each_part(dropbox, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Dropbox folder /Missing: path/not_found/" in out
     assert "Dropbox link: FAILED" in out
+
+
+def test_check_tests_the_one_folder_mcp_clients_can_read(dropbox, tmp_path, capsys):
+    env_file = tmp_path / "dropbox-mcp" / ".env"
+    link = "APP_KEY=k\nAPP_SECRET=s\nDROPBOX_REFRESH_TOKEN=refresh-1\n"
+    env_file.write_text(link + "DROPBOX_FOLDER=ns:42/\nWRITABLE_PATHS=/Sub\n")
+    assert setup.check(setup.MCP_DIR) is True
+    env_file.write_text(link + "DROPBOX_FOLDER=/Missing\n")
+    assert setup.check(setup.MCP_DIR) is False
+    out = capsys.readouterr().out
+    assert "Folder clients can read ns:42: OK" in out and "Writable /Sub: OK" in out
+    assert "Folder clients can read /Missing: path/not_found/" in out
 
 
 class FakeSystem:
