@@ -118,6 +118,71 @@ def test_ns_clients_are_rooted_at_their_folder(monkeypatch):
         server.dbx.cache_clear()
 
 
+@pytest.mark.parametrize("folder, namespace, inner", [
+    ("/Projects", "", "/Projects"),
+    ("ns:42", "42", ""),
+    ("ns:42/Drawings", "42", "/Drawings"),
+])
+def test_with_one_folder_it_is_the_top_level(dbx, monkeypatch, folder, namespace, inner):
+    monkeypatch.setattr(server, "DROPBOX_FOLDER", folder)
+    monkeypatch.setattr(server, "WRITABLE_PATHS", ["/Outbox"])
+    client = dbx.at[namespace] if namespace else dbx
+    client.files_list_folder.return_value = ListFolderResult(
+        entries=[FolderMetadata(name="Outbox", id="id:o", path_display=f"{inner}/Outbox", path_lower=f"{inner}/outbox".lower()),
+                 file_md(f"{inner}/Outbox/a.txt")], cursor="c", has_more=False)
+
+    outbox, a = server.list_folder("", recursive=True)["entries"]
+
+    client.files_list_folder.assert_called_once_with(inner, recursive=True, limit=2000)
+    assert (outbox["path"], a["path"], a["writable"]) == ("/Outbox", "/Outbox/a.txt", True)
+
+    client.files_download.return_value = (file_md(f"{inner}/Outbox/a.txt"), SimpleNamespace(content=b"hi"))
+    assert server.read_file("/Outbox/a.txt") == "hi"
+    client.files_download.assert_called_once_with(f"{inner}/Outbox/a.txt")
+
+    client.files_search_v2.return_value = SimpleNamespace(
+        matches=[SimpleNamespace(metadata=SimpleNamespace(get_metadata=lambda: file_md(f"{inner}/Outbox/a.txt")))])
+    assert [found["path"] for found in server.search("a")] == ["/Outbox/a.txt"]
+    assert client.files_search_v2.call_args.kwargs["options"].path == (inner or None)  # None: all of ns:42
+
+    client.files_upload.return_value = file_md(f"{inner}/Outbox/b.txt")
+    assert server.write_file("/Outbox/b.txt", "hi", ctx("dropbox:write"))["path"] == "/Outbox/b.txt"
+    assert client.files_upload.call_args.args == (b"hi", f"{inner}/Outbox/b.txt")
+    if namespace:
+        assert not dbx.mock_calls  # nothing went to the client rooted at your own folder
+    assert server.account_info(ctx())["folder"] == folder
+
+
+def test_with_one_folder_the_folder_itself_is_the_top(monkeypatch):
+    """A recursive listing includes the folder itself."""
+    monkeypatch.setattr(server, "DROPBOX_FOLDER", "ns:42/Drawings")
+    folder = FolderMetadata(name="Drawings", id="id:d", path_display="/Drawings", path_lower="/drawings")
+    assert server.describe(folder)["path"] == ""
+
+
+@pytest.mark.parametrize("path", ["ns:7", "ns:42/Drawings/a.txt", "id:abc", "rev:0123456789"])
+def test_with_one_folder_nothing_outside_it_can_be_reached(dbx, monkeypatch, path):
+    monkeypatch.setattr(server, "DROPBOX_FOLDER", "ns:42/Drawings")
+    for tool in (server.list_folder, server.get_metadata, server.read_file, lambda p: server.search("a", p)):
+        with pytest.raises(ToolError, match="inside this server's folder"):
+            tool(path)
+    with pytest.raises(ToolError):  # even ns:42/..., which WRITABLE_PATHS lists
+        server.write_file(path, "hi", ctx("dropbox:write"))
+    assert not dbx.mock_calls and not dbx.at["42"].mock_calls
+
+
+def test_with_one_folder_other_folders_are_not_listed(monkeypatch):
+    monkeypatch.setenv("DROPBOX_FOLDER", "ns:42/Drawings/")
+    try:
+        importlib.reload(server)
+        assert server.DROPBOX_FOLDER == "ns:42/Drawings"
+        assert "list_shared_folders" not in {t.name for t in asyncio.run(server.mcp.list_tools())}
+        assert "ns:" not in server.mcp.instructions
+    finally:
+        monkeypatch.delenv("DROPBOX_FOLDER")
+        importlib.reload(server)
+
+
 def test_read_file_text_image_and_binary(dbx):
     dbx.files_download.return_value = (file_md("/a.txt"), SimpleNamespace(content="héllo".encode()))
     assert server.read_file("/a.txt") == "héllo"

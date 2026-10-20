@@ -43,3 +43,14 @@ Fixed `ns:<id>` folders: team folders, and shared folders not added to the accou
 
 ## 2026-10-20 17:49 CDT
 Explained why dropbox-mcp's container has no volumes, after being asked how it can reach Dropbox without one. It keeps no files: each tool call is a live request to the Dropbox API, made with the app key, secret and refresh token in `.env`. The explanation is in the README's Part B and in `dropbox-mcp/docker-compose.yml`.
+
+## 2026-10-20 18:48 CDT
+Added `DROPBOX_FOLDER` to dropbox-mcp, which limits MCP clients to one Dropbox folder. It can be a path, or `ns:<id>/path` in a team folder or in a shared folder not added to the account.
+- **Confined at one point:** that folder becomes the clients' top level (`""`). Every call is confined to it in `locate()`, which every tool goes through:
+  - clients' paths are joined under it;
+  - `ns:`, `id:` and `rev:` paths, which could point anywhere, are refused;
+  - searches are scoped to it;
+  - returned paths drop the folders above it.
+- **Hidden and writable:** `list_shared_folders` isn't offered, so other folders' names stay hidden. `WRITABLE_PATHS` become paths inside the folder.
+- **Setup:** `./setup.py mcp` asks for the folder, asking again until Dropbox finds it. It skips the team-root question when a folder is given and accepts `ns://<id>` as typed. `./setup.py check` tests the folder.
+- **Testing:** unit tests, plus the real server run over MCP against a fake Dropbox, where every call stayed inside the folder. Not yet tried against a real Dropbox account.

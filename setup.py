@@ -113,6 +113,17 @@ def connect(env):
     return token, api(token, "users/get_current_account")
 
 
+def dropbox_path(answer):
+    """A Dropbox path as typed, tidied up: '/a/b' or 'ns:<id>/a/b', and '' for the top. Takes ns://<id> too."""
+    answer = re.sub(r"^ns:/*", "ns:", answer.strip())
+    return (answer if answer.startswith(("/", "ns:")) else "/" + answer).rstrip("/")
+
+
+def in_folder(folder, path):
+    """The Dropbox path of `path`, a path inside the MCP server's DROPBOX_FOLDER `folder` ('' for all of Dropbox)."""
+    return f"{folder}/{path.strip('/')}".rstrip("/") if folder else path
+
+
 def folder_problem(token, path, team_root=None):
     """None if `path` is a folder in Dropbox, otherwise Dropbox's complaint (e.g. "path/not_found/")."""
     # Calls only reach inside the folder they're rooted at: yours, or the team's with team_root. A shared
@@ -232,9 +243,7 @@ def setup_backup(folder):
         remote = ask(f"Dropbox folder (e.g. {example})", env.get("DROPBOX_FOLDER", ""))
         if not remote:
             continue
-        if not remote.startswith(("/", "ns:")):
-            remote = "/" + remote
-        remote = remote.rstrip("/") or "/"
+        remote = dropbox_path(remote) or "/"
         problem = folder_problem(token, remote)
         if not problem:
             print("  Found it in Dropbox.")
@@ -372,15 +381,18 @@ WantedBy=multi-user.target
 
 
 def setup_mcp():
-    """Set up dropbox-mcp: writable folders, team folders, and the Dropbox link."""
+    """Set up dropbox-mcp: what clients can read and write, team folders, and the Dropbox link."""
     env_file = os.path.join(MCP_DIR, ".env")
     env = read_env(env_file)
     print("Dropbox MCP setup. Press Enter to keep the value in brackets.\n")
     ask_app(env)
 
-    print("\nMCP clients can read all of Dropbox, and write only inside the folders you list here.")
-    print("Use paths like /Shared/Team, or ns:<id> for team folders and shared folders that aren't")
-    print("in your Dropbox (./setup.py shared lists them). Enter - for none.")
+    print("\nMCP clients can read all of Dropbox, or only one folder, which is then their top level.")
+    print("Use paths like /Projects, or ns:<id>/path for team folders and shared folders that aren't")
+    print("in your Dropbox (./setup.py shared lists them). Enter / for all of Dropbox.")
+    env["DROPBOX_FOLDER"] = dropbox_path(ask("Folder MCP clients can read", env.get("DROPBOX_FOLDER") or "/"))
+    where = f"paths inside {env['DROPBOX_FOLDER']}, like /Outbox" if env["DROPBOX_FOLDER"] else "the same kind of paths"
+    print(f"\nThey can write only inside the folders you list here. Use {where}. Enter - for none.")
     was_writable = bool(env.get("WRITABLE_PATHS"))
     answer = ask("Writable folders, comma-separated", env.get("WRITABLE_PATHS", "-"))
     env["WRITABLE_PATHS"] = "" if answer == "-" else ",".join(p.strip() for p in answer.split(",") if p.strip())
@@ -388,8 +400,10 @@ def setup_mcp():
         env["WRITE_PERMISSION"] = ask("Auth0 permission a user needs to write", env.get("WRITE_PERMISSION") or "dropbox:write")
     else:
         env["WRITE_PERMISSION"] = env.get("WRITE_PERMISSION") or "dropbox:write"
-    team = choose("\nIs this a Dropbox Business account, and should team folders show at the top level?",
-                  ["y", "n"], "y" if env.get("DROPBOX_TEAM_SPACE") == "true" else "n")
+    team = "n"  # with one folder, the top level is that folder, and team folders are ns:<id> paths
+    if not env["DROPBOX_FOLDER"]:
+        team = choose("\nIs this a Dropbox Business account, and should team folders show at the top level?",
+                      ["y", "n"], "y" if env.get("DROPBOX_TEAM_SPACE") == "true" else "n")
     env["DROPBOX_TEAM_SPACE"] = "true" if team == "y" else "false"
 
     scopes = MCP_SCOPES + (" files.content.write" if env["WRITABLE_PATHS"] else "")
@@ -399,15 +413,23 @@ def setup_mcp():
     token, account = link_dropbox(env, scopes, relink)
 
     team_root = account["root_info"]["root_namespace_id"] if team == "y" else None
+    while env["DROPBOX_FOLDER"]:
+        problem = folder_problem(token, env["DROPBOX_FOLDER"])
+        if not problem:
+            print(f"  Found {env['DROPBOX_FOLDER']} in Dropbox.")
+            break
+        print(f"  {env['DROPBOX_FOLDER']} doesn't work: {problem}")
+        env["DROPBOX_FOLDER"] = dropbox_path(ask("Folder MCP clients can read (/ for all of Dropbox)",
+                                                 env["DROPBOX_FOLDER"]))
     for path in filter(None, env["WRITABLE_PATHS"].split(",")):
-        problem = folder_problem(token, path, team_root)
+        problem = folder_problem(token, in_folder(env["DROPBOX_FOLDER"], path), team_root)
         if problem and "not_folder" not in problem:
             note = " (writing a file there creates it)" if "not_found" in problem else ""
             print(f"  Writable folder {path}: {problem}{note}")
 
     env["MCP_HOST"] = ask("\nPublic hostname for the MCP server, e.g. dropbox-mcp.example.com", env.get("MCP_HOST", ""))
-    write_env(env_file, env, ["APP_KEY", "APP_SECRET", "DROPBOX_REFRESH_TOKEN", "WRITABLE_PATHS", "WRITE_PERMISSION",
-                              "DROPBOX_TEAM_SPACE", "MCP_HOST"])
+    write_env(env_file, env, ["APP_KEY", "APP_SECRET", "DROPBOX_REFRESH_TOKEN", "DROPBOX_FOLDER", "WRITABLE_PATHS",
+                              "WRITE_PERMISSION", "DROPBOX_TEAM_SPACE", "MCP_HOST"])
     host = env["MCP_HOST"] or "dropbox-mcp.example.com"
     write_note = f" and {env['WRITE_PERMISSION']} (to write)" if env["WRITABLE_PATHS"] else ""
     print(f"\nWrote {os.path.relpath(env_file)}. Next:\n")
@@ -440,8 +462,13 @@ def check(folder):
     ok = True
     if is_mcp:
         team_root = account["root_info"]["root_namespace_id"] if env.get("DROPBOX_TEAM_SPACE") == "true" else None
+        readable = env.get("DROPBOX_FOLDER", "").rstrip("/")  # as the server reads it
+        if readable:
+            problem = folder_problem(token, readable, team_root)
+            print(f"  Folder clients can read {readable}: {problem or 'OK'}")
+            ok = not problem
         for path in filter(None, env.get("WRITABLE_PATHS", "").split(",")):
-            problem = folder_problem(token, path, team_root)
+            problem = folder_problem(token, in_folder(readable, path), team_root)
             print(f"  Writable {path}: {'OK' if not problem or 'not_folder' in problem else problem}")
         if not env.get("WRITABLE_PATHS"):
             print("  Writable folders: none, everything is read-only")
