@@ -1,4 +1,10 @@
 #!/bin/bash
+# Example post-download hook. To use one, copy this file to post-download-hook.sh
+# (in this folder) and edit it. When restoring, it runs after each downloaded file,
+# with the file's path as $1. In Docker, rebuild after changing it:
+#   docker compose up -d --build
+#
+# This example rewrites parts of an SQL dump.
 
 # Check if file path was provided
 if [ -z "$1" ]; then
@@ -9,4 +15,3 @@ fi
 # Run the sed command on the given file
 sed -i.bak 's/GENERATED ALWAYS AS .* VIRTUAL/NOT NULL/' "$1"
 sed -i.bak "s/''{/'{/" "$1"
-

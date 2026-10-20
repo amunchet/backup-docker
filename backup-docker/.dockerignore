@@ -1,0 +1,11 @@
+# Settings reach the container through env_file in docker-compose.yml, not the image.
+.env
+*.env
+venv/
+temp/
+__pycache__/
+*.pyc
+*.pid
+main.lock
+.pytest_cache/
+.coverage
