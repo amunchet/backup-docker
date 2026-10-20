@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 *.pid
+main.lock
 **/.armada/
 backup-docker/temp/
 # Copies of backup-docker for syncing more folders (see README)

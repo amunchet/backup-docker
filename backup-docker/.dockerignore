@@ -6,5 +6,6 @@ temp/
 __pycache__/
 *.pyc
 *.pid
+main.lock
 .pytest_cache/
 .coverage

@@ -5,12 +5,13 @@ Runs a backup or restore pass (SYNC_DIRECTION) every SLEEP_TIME seconds.
     python main.py          run until stopped
     python main.py --once   run one pass and exit
 """
+import fcntl
 import os
+import signal
 import sys
 import time
 from pathlib import Path
 
-import pid
 from dropbox.exceptions import DropboxException
 
 import backup
@@ -52,9 +53,13 @@ def main():
 
 
 if __name__ == "__main__":  # pragma: no cover
-    if os.getenv("DOCKER"):
+    # Stop cleanly on `docker stop` or `systemctl stop`, saving what the pass has done so far.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit())
+    # One copy at a time per folder, so a cron job or a manual run can't overlap the service. The
+    # kernel drops the lock when the process ends, however it ends, so it never goes stale.
+    with open(Path(__file__).with_name("main.lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit(f"{Path(__file__).resolve().parent.name} is already running, e.g. as a service or from cron.")
         main()
-    else:
-        # One instance per copy of this folder, so cron can start it regularly.
-        with pid.PidFile(piddir=Path(__file__).resolve().parent):
-            main()

@@ -1,6 +1,5 @@
 python-dotenv
 dropbox
-pid
 
 # Testing
 pytest

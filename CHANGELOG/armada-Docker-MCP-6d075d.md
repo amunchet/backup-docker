@@ -24,3 +24,6 @@ Rewrote the README as one step-by-step guide: creating the Dropbox app (access t
 
 ## 2026-10-19 16:50 CDT
 The MCP server now always requires `WRITE_PERMISSION` for writes. An empty value means the default `dropbox:write`, instead of silently turning the check off.
+
+## 2026-10-19 19:13 CDT
+backup-docker now stops cleanly and can't get stuck after a crash. The `pid` package's lock is replaced by a plain `flock` that the kernel releases when the process dies. Before, after a power cut, a leftover PID file whose number now belonged to another process kept every later start failing with "already running". `pid` also exited with status 1 on SIGTERM, which made systemd mark each `systemctl stop` as a failure. SIGTERM now exits cleanly and saves the pass's progress. In Docker, that cuts `docker stop` from a 10-second timeout and SIGKILL to about a second. Restore writes `.restore-state.json` atomically, so being stopped mid-write can't corrupt it. The lock now applies in Docker too, so `docker compose exec ... main.py --once` can't overlap the running loop.

@@ -97,5 +97,8 @@ def sync_down(dbx) -> None:
                 if hook.returncode:
                     logger.error(f"post-download-hook.sh failed on {local} (exit code {hook.returncode})")
     finally:
-        state_file.write_text(json.dumps(state, indent=1, sort_keys=True))
+        # Written beside it and swapped in, so being stopped mid-write can't leave half a file.
+        partial = state_file.with_suffix(".tmp")
+        partial.write_text(json.dumps(state, indent=1, sort_keys=True))
+        os.replace(partial, state_file)
     logger.info(f"Restore pass done: {downloaded} downloaded, {failed} failed, {unchanged} unchanged.")

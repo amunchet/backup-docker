@@ -1,4 +1,7 @@
+import fcntl
+import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -67,3 +70,11 @@ def test_a_failed_pass_does_not_stop_the_loop(settings, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         main.main()
     assert settings["backup"].call_count == 3
+
+
+def test_a_second_copy_refuses_to_start():
+    """While one copy runs (e.g. the service), another (e.g. from cron) stops before doing anything."""
+    with open(Path(main.__file__).with_name("main.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        second = subprocess.run([sys.executable, main.__file__, "--once"], capture_output=True, text=True, timeout=60)
+    assert second.returncode == 1 and "already running" in second.stderr
