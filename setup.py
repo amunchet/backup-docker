@@ -3,25 +3,36 @@
 Interactive setup: links your Dropbox app, writes the .env file and checks that
 Dropbox can be reached. Needs only Python 3, nothing to install.
 
-    ./setup.py                  asks which part to set up
-    ./setup.py backup [dir]     back up a folder to Dropbox, or restore one from it
-                                (dir: backup-docker, or a copy of it for another folder)
-    ./setup.py mcp              the Dropbox MCP server (dropbox-mcp)
-    ./setup.py check [part]     test the saved settings (part: backup, mcp or a directory)
-    ./setup.py shared [part]    list your shared folders and the path to use for each
+    ./setup.py                        asks what to set up
+    ./setup.py backup [dir]           back up a folder to Dropbox, or restore one from it, run by Docker
+                                      (dir: backup-docker, or a copy of it for another folder)
+    ./setup.py service [dir]          the same, run as a systemd service instead: installs it, or
+                                      updates it and its settings
+    ./setup.py remove-service [dir]   stop and remove that service
+    ./setup.py mcp                    the Dropbox MCP server (dropbox-mcp)
+    ./setup.py check [part]           test the saved settings (part: backup, mcp or a directory)
+    ./setup.py shared [part]          list your shared folders and the path to use for each
 """
 import base64
 import json
 import os
+import pwd
+import re
+import shutil
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKUP_DIR = os.path.join(HERE, "backup-docker")
 MCP_DIR = os.path.join(HERE, "dropbox-mcp")
 APP_CONSOLE = "https://www.dropbox.com/developers/apps"
+SYSTEMD = "/run/systemd/system"  # exists only on machines that systemd runs
+UNIT_DIR = "/etc/systemd/system"
 
 # What each part's Dropbox link may do. The Dropbox app needs all of these ticked on its
 # Permissions tab. The MCP server only gets files.content.write when something is writable.
@@ -113,6 +124,10 @@ def folder_problem(token, path, team_root=None):
 def ask_app(env):
     """Ask for the Dropbox app's key and secret, offering the ones the other part uses."""
     others = {**read_env(os.path.join(BACKUP_DIR, ".env")), **read_env(os.path.join(MCP_DIR, ".env"))}
+    if not (env.get("APP_KEY") or others.get("APP_KEY")):
+        print(f"First you need a Dropbox app (README, step 1). At {APP_CONSOLE}")
+        print("click Create app, and pick Scoped access and Full Dropbox. On the app's Permissions tab,")
+        print(f"tick {', '.join(BACKUP_SCOPES.split())}\nand click Submit.\n")
     print(f"Your Dropbox app's key and secret are on its Settings tab, at {APP_CONSOLE}")
     env["APP_KEY"] = ask("Dropbox app key", env.get("APP_KEY") or others.get("APP_KEY", ""))
     env["APP_SECRET"] = ask("Dropbox app secret", env.get("APP_SECRET") or others.get("APP_SECRET", ""))
@@ -229,10 +244,123 @@ def setup_backup(folder):
 
     write_env(env_file, env, ["APP_KEY", "APP_SECRET", "DROPBOX_REFRESH_TOKEN", "SYNC_DIRECTION", "WATCH_FOLDER",
                               "DROPBOX_FOLDER", "SLEEP_TIME"])
-    where = os.path.relpath(folder)
-    print(f"\nWrote {os.path.relpath(env_file)}.\n")
-    print(f"Start it (or apply new settings), from {where}:\n  docker compose up -d --build\n")
-    print("See what it's doing:\n  docker compose logs -f")
+    print(f"\nWrote {os.path.relpath(env_file)}.")
+
+
+def setup_service(folder, remove=False):
+    """Install, update or remove the systemd service that runs a backup-docker folder without Docker."""
+    if not os.path.exists(os.path.join(folder, "main.py")):
+        sys.exit(f"{folder} isn't backup-docker or a copy of it.")
+    if not os.path.isdir(SYSTEMD):
+        sys.exit("systemd isn't running on this machine, so it can't run the service. Use Docker instead (README, A2).")
+    base = os.path.basename(folder)
+    # dropbox-backup for backup-docker, dropbox-backup-photos for a copy named backup-docker-photos
+    suffix = base.replace("backup-docker", "", 1) if base.startswith("backup-docker") else f"-{base}"
+    name = "dropbox-backup" + re.sub(r"[^A-Za-z0-9_.-]", "-", suffix)
+    unit = os.path.join(UNIT_DIR, f"{name}.service")
+    sudo = [] if os.geteuid() == 0 else ["sudo"]
+    if sudo and not shutil.which("sudo"):
+        sys.exit("Installing a service needs root. Run this as root, or install sudo.")
+    rel = os.path.relpath(folder)
+    here = "" if folder == BACKUP_DIR else f" {rel}"  # how the commands it prints name this folder
+    installed = []
+    if os.path.exists(unit):
+        with open(unit) as f:
+            installed = re.findall(r"^WorkingDirectory=(.*)$", f.read(), re.M)
+
+    if remove:
+        if not os.path.exists(unit):
+            sys.exit(f"There's no {name} service to remove.")
+        if choose(f"Stop and remove the {name} service? Its settings and files stay.", ["y", "n"], "n") == "y":
+            for command in (["systemctl", "disable", "--now", "--quiet", name], ["rm", unit], ["systemctl", "daemon-reload"]):
+                subprocess.run(sudo + command, check=True)
+            print(f"Removed {name}. To install it again: ./setup.py service{here}")
+        return
+
+    user = pwd.getpwuid(os.geteuid()).pw_name
+    if os.environ.get("SUDO_USER") and not sudo:
+        print(f"You ran this with sudo, so the service would run as root, not as {os.environ['SUDO_USER']}.")
+        if choose("Run it as root?", ["y", "n"], "n") == "n":
+            sys.exit("Run ./setup.py service without sudo. It asks for your password when it needs it.")
+    if sys.version_info < (3, 8):
+        sys.exit(f"The service needs Python 3.8 or newer, and this is Python {sys.version.split()[0]}. Install a "
+                 f"newer one and run this setup with it, e.g.: python3.11 setup.py service{here}")
+    if re.search(r"[%$\\\"'\n]", folder):
+        sys.exit(f"systemd can't run a folder whose path has % $ \\ or quotes in it. Move {rel}, e.g. to /opt.")
+    if shutil.which("docker") and subprocess.run(["docker", "compose", "ps", "-q"], cwd=folder,
+                                                 capture_output=True, text=True).stdout.strip():
+        sys.exit(f"{rel} is also running in Docker. Stop that first, so the two don't both sync the folder:\n"
+                 f"  cd {rel} && docker compose down")
+    if installed and installed[0] != folder:
+        if choose(f"{name} already runs {installed[0]}. Switch it to {folder}?", ["y", "n"], "n") == "n":
+            sys.exit("Nothing was changed.")
+
+    print(f"This sets up {rel} as the systemd service {name}.")
+    print(f"It starts at boot, restarts after a crash, and runs as {user}, with {user}'s access to files.\n")
+    print(f"[1/4] Preparing {rel}/venv, a private Python for the service...")
+    venv = os.path.join(folder, "venv")
+    python = os.path.join(venv, "bin", "python")
+    # --clear rebuilds a venv whose Python has gone, e.g. after an OS upgrade.
+    subprocess.run([sys.executable, "-m", "venv"] + ([] if os.path.exists(python) else ["--clear"]) + [venv], check=True)
+
+    print("\n[2/4] Settings")
+    env_file = os.path.join(folder, ".env")
+    if not (read_env(env_file).get("DROPBOX_REFRESH_TOKEN") and check(folder)
+            and choose("Keep these settings?", ["y", "n"], "y") == "y"):
+        setup_backup(folder)
+    local = read_env(env_file)["WATCH_FOLDER"]
+    if not os.access(local, os.R_OK | os.W_OK | os.X_OK):
+        sys.exit(f"The service runs as {user}, who can't read and write {local}. Give {user} access, e.g.\n"
+                 f"  sudo chown -R {user} {local}\nor run this setup as a user who has it.")
+
+    print("\n[3/4] Installing its Python packages (this can take a minute)...")
+    subprocess.run([python, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "-r",
+                    os.path.join(folder, "requirements.txt")], check=True)
+
+    print(f"\n[4/4] Installing and starting {unit}" + (" (sudo may ask for your password)" if sudo else ""))
+    if os.path.exists(unit):
+        subprocess.run(sudo + ["systemctl", "stop", name], check=True)
+    subprocess.run(sudo + ["tee", unit], stdout=subprocess.DEVNULL, check=True, text=True, input=f"""\
+# Written by {os.path.join(HERE, "setup.py")} service{here}, which also changes it.
+# Settings are in {env_file}; after editing it: sudo systemctl restart {name}
+[Unit]
+Description=Dropbox backup/restore ({folder})
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User={user}
+WorkingDirectory={folder}
+ExecStart="{python}" "{os.path.join(folder, "main.py")}"
+Restart=on-failure
+RestartSec=60
+SyslogIdentifier={name}
+
+[Install]
+WantedBy=multi-user.target
+""")
+    started = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")  # the log below starts here
+    for command in (["daemon-reload"], ["enable", "--quiet", name], ["start", name]):
+        subprocess.run(sudo + ["systemctl"] + command, check=True)
+
+    # Bad settings stop it within seconds, and its first log line means Dropbox let it in.
+    for _ in range(20):
+        time.sleep(1)
+        state = subprocess.run(sudo + ["systemctl", "is-active", name], capture_output=True, text=True).stdout.strip()
+        log = subprocess.run(sudo + ["journalctl", "-q", "-u", name, "--since", started, "-o", "cat", "--no-pager"],
+                             capture_output=True, text=True).stdout
+        if state != "active" or "[DROPBOX-BACKUP" in log:
+            break
+    print("".join(f"  | {line}\n" for line in log.splitlines()[-12:]))
+    if state != "active":
+        sys.exit(f"{name} didn't start, and the log above says why. Fix that, then run ./setup.py service{here} again.")
+    as_root = "sudo " if sudo else ""
+    print(f"{name} is running. It starts by itself at boot.\n")
+    print(f"  See what it's doing:  {as_root}journalctl -u {name} -f")
+    print(f"  Is it running?        {as_root}systemctl status {name}")
+    print(f"  Apply an edited .env: {as_root}systemctl restart {name}")
+    print(f"  Change settings:      ./setup.py service{here}")
+    print(f"  Remove the service:   ./setup.py remove-service{here}")
 
 
 def setup_mcp():
@@ -293,12 +421,12 @@ def check(folder):
     is_mcp = os.path.exists(os.path.join(folder, "server.py"))
     print(f"{os.path.relpath(folder)}:")
     if not env.get("DROPBOX_REFRESH_TOKEN"):
-        print(f"  Not set up yet. Run: ./setup.py {'mcp' if is_mcp else 'backup'}")
+        print("  Not set up yet.")
         return False
     try:
         token, account = connect(env)
     except DropboxError as e:
-        print(f"  Dropbox link: FAILED ({e}). Run ./setup.py {'mcp' if is_mcp else 'backup'} again.")
+        print(f"  Dropbox link: FAILED ({e})")
         return False
     print(f"  Dropbox link: OK ({account['email']})")
     ok = True
@@ -333,21 +461,32 @@ def part_dirs(arg):
 
 
 def main():
+    sys.stdout.reconfigure(line_buffering=True)  # keep prints in order with the output of commands it runs
     args = sys.argv[1:]
     target = args[1] if len(args) > 1 else None
+    folder = os.path.abspath(target) if target else BACKUP_DIR
     try:
-        command = args[0] if args else choose("Set up which part: backup (back up or restore a folder) or mcp?",
-                                              ["backup", "mcp"], "backup")
+        if not args:
+            print("What to set up:\n"
+                  "  backup   back up a folder to Dropbox, or restore one from it, run by Docker\n"
+                  "  service  the same, run as a systemd service instead of Docker\n"
+                  "  mcp      the Dropbox MCP server, run by Docker behind caddy-auth0\n")
+        command = args[0] if args else choose("Which one", ["backup", "service", "mcp"], "backup")
         if command == "backup":
-            setup_backup(os.path.abspath(target) if target else BACKUP_DIR)
+            setup_backup(folder)
+            print(f"\nStart it (or apply new settings), from {os.path.relpath(folder)}:\n  docker compose up -d --build\n")
+            print("See what it's doing:\n  docker compose logs -f\n")
+            print(f"Or run it as a systemd service instead of Docker:\n  ./setup.py service{'' if folder == BACKUP_DIR else ' ' + target}")
+        elif command in ("service", "remove-service"):
+            setup_service(folder, remove=command == "remove-service")
         elif command == "mcp":
             setup_mcp()
         elif command == "check":
             dirs = part_dirs(target)
             if not dirs:
-                sys.exit("Nothing is set up yet. Run ./setup.py backup or ./setup.py mcp.")
-            results = [check(d) for d in dirs]
-            sys.exit(0 if all(results) else 1)
+                sys.exit("Nothing is set up yet. Run ./setup.py backup, service or mcp.")
+            if not all([check(d) for d in dirs]):
+                sys.exit("To fix it, run that part's setup again: ./setup.py backup, service or mcp.")
         elif command == "shared":
             dirs = [d for d in part_dirs(target) if read_env(os.path.join(d, ".env")).get("DROPBOX_REFRESH_TOKEN")]
             if not dirs:
@@ -364,8 +503,10 @@ def main():
         sys.exit(f"Dropbox said: {e}")
     except urllib.error.URLError as e:
         sys.exit(f"Couldn't reach Dropbox: {e.reason}")
+    except subprocess.CalledProcessError as e:
+        sys.exit(f"\nStopped, because this failed: {' '.join(e.cmd)}")
     except (KeyboardInterrupt, EOFError):
-        sys.exit("\nStopped. Nothing was saved.")
+        sys.exit("\nStopped.")
 
 
 if __name__ == "__main__":

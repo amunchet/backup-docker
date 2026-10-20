@@ -1,18 +1,19 @@
 # Backup Docker
 
-Two small Docker services for working with Dropbox from a server:
+Two small services for working with Dropbox from a server:
 
-- **[backup-docker](#part-a-back-up-or-restore-a-folder)** keeps a folder on this machine in sync with a Dropbox folder. It either **backs up** the folder to Dropbox, or **restores** (downloads) a Dropbox folder onto this machine, shared folders included. It can also put a file back to an earlier version ("time travel").
+- **[backup-docker](#part-a-back-up-or-restore-a-folder)** keeps a folder on this machine in sync with a Dropbox folder. It either **backs up** the folder to Dropbox, or **restores** (downloads) a Dropbox folder onto this machine, shared folders included. It can also put a file back to an earlier version ("time travel"). It runs in Docker, or as a systemd service without Docker.
 - **[dropbox-mcp](#part-b-dropbox-for-mcp-clients)** lets AI clients such as LibreChat read your Dropbox, shared folders included, over MCP. Everything is read-only except the folders you choose. It runs behind [caddy-auth0](https://github.com/amunchet/caddy-auth0), which handles login.
 
-A setup script, `./setup.py`, does the fiddly parts: it links Dropbox, writes the settings file and checks that everything can be reached.
+A setup script, `./setup.py`, does the fiddly parts: it links Dropbox, writes the settings file and checks that everything can be reached. It also installs backup-docker as a systemd service, if you'd rather not use Docker.
 
 **Contents:** [What you need](#what-you-need) · [Step 1: Create a Dropbox app](#step-1-create-a-dropbox-app) · [Part A: Back up or restore a folder](#part-a-back-up-or-restore-a-folder) · [Part B: Dropbox for MCP clients](#part-b-dropbox-for-mcp-clients) · [Troubleshooting](#troubleshooting) · [Development](#development)
 
 ## What you need
 
 - A Linux machine with **Docker** and **Docker Compose**. `docker compose version` should print a version.
-- **git**, and **Python 3** for the setup script. Setup needs nothing else installed.
+  - For Part A, systemd can take Docker's place: backup-docker can [run as a systemd service](#a3-or-run-it-as-a-systemd-service). Most Linux distributions use systemd.
+- **git**, and **Python 3** for the setup script. Setup needs nothing else installed. The systemd service needs Python 3.8 or newer with its `venv` module; on Debian or Ubuntu, get that with `sudo apt install python3-venv`.
 - A **Dropbox** account.
 - For Part B only: [caddy-auth0](https://github.com/amunchet/caddy-auth0) running on the same machine.
 
@@ -55,6 +56,8 @@ backup-docker runs in the background and makes a pass every few minutes:
 
 Neither direction ever deletes anything. Dropbox also keeps old versions, which [time travel](#time-travel) can bring back.
 
+You can run it with Docker ([A1](#a1-run-setup), then [A2](#a2-start-it-with-docker)), or as a systemd service ([A3](#a3-or-run-it-as-a-systemd-service)). Pick one for each folder, never both, so the folder isn't synced twice at once.
+
 ### A1. Run setup
 
 ```sh
@@ -74,7 +77,7 @@ It asks these questions. Press Enter to keep the value shown in brackets.
 
 Setup saves your answers in `backup-docker/.env`, readable only by you, and checks that Dropbox and both folders can be reached. You can run it again at any time to change something. Your current answers become the defaults.
 
-### A2. Start it
+### A2. Start it with Docker
 
 ```sh
 cd backup-docker
@@ -92,6 +95,73 @@ The logs should show something like this. `Ctrl+C` stops following the logs; the
 
 It keeps running after reboots until you stop it with `docker compose down`.
 
+### A3. Or: run it as a systemd service
+
+Instead of Docker, backup-docker can run as an ordinary systemd service. It runs as your user, so restored files belong to you, and it can back up only files you can read. It starts at boot, and systemd restarts it a minute after a crash. One command sets everything up, so skip A1 and A2.
+
+1. On Debian or Ubuntu, install Python's `venv` module. Other distributions include it.
+   ```sh
+   sudo apt install python3-venv
+   ```
+2. Create the Dropbox app ([step 1](#step-1-create-a-dropbox-app)) if you haven't yet.
+3. Run the installer as the user the service should run as. Don't put `sudo` in front; it asks for your password when it needs it.
+   ```sh
+   ./setup.py service
+   ```
+
+It works through these steps, and stops with an explanation if something is wrong:
+
+| Step | What happens |
+| --- | --- |
+| Checks | systemd runs this machine, `sudo` works, Python is 3.8 or newer, and this folder isn't also running in Docker. |
+| 1. Python | Makes `backup-docker/venv`, a private Python environment for the service. |
+| 2. Settings | If `backup-docker/.env` works, shows it and asks whether to keep it. Otherwise it asks the [setup questions](#a1-run-setup). Then it checks that you can read and write the folder. |
+| 3. Packages | Installs the service's Python packages into the venv. |
+| 4. Service | Writes `/etc/systemd/system/dropbox-backup.service`, enables and starts it, and waits until it has connected to Dropbox. |
+
+It ends like this:
+
+```
+[4/4] Installing and starting /etc/systemd/system/dropbox-backup.service (sudo may ask for your password)
+  | Started Dropbox backup/restore (/home/you/backup-docker/backup-docker).
+  | [DROPBOX-BACKUP INFO] ... BACKUP: /srv/data -> Dropbox /Backups/server1 (you@example.com), every 300s
+  | [DROPBOX-BACKUP INFO] ... Backup pass done: 42 uploaded, 0 failed, 0 unchanged.
+
+dropbox-backup is running. It starts by itself at boot.
+
+  See what it's doing:  sudo journalctl -u dropbox-backup -f
+  Is it running?        sudo systemctl status dropbox-backup
+  Apply an edited .env: sudo systemctl restart dropbox-backup
+  Change settings:      ./setup.py service
+  Remove the service:   ./setup.py remove-service
+```
+
+If the service doesn't start, you see its log instead, saying why, e.g. *Dropbox refused the saved settings*. Fix that and run `./setup.py service` again. Running it again is always safe: it keeps the settings and venv if they work, and restarts the service. Use it to change settings, and after updating.
+
+<details>
+<summary>The service file it writes</summary>
+
+`./setup.py service` writes this file each time, with your user and paths filled in, so there's no need to edit it.
+
+```ini
+[Unit]
+Description=Dropbox backup/restore (/home/you/backup-docker/backup-docker)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=you
+WorkingDirectory=/home/you/backup-docker/backup-docker
+ExecStart="/home/you/backup-docker/backup-docker/venv/bin/python" "/home/you/backup-docker/backup-docker/main.py"
+Restart=on-failure
+RestartSec=60
+SyslogIdentifier=dropbox-backup
+
+[Install]
+WantedBy=multi-user.target
+```
+</details>
+
 ### Where things are (Docker paths)
 
 The container only sees the one folder you chose, mounted inside it as `/backup`. That's why the logs say `/backup`. You never type `/backup` yourself.
@@ -103,18 +173,23 @@ The container only sees the one folder you chose, mounted inside it as `/backup`
 | `backup-docker/post-download-hook.sh`, if you create one | `/app/post-download-hook.sh` | Copied in when the image is built, so rebuild after changing it |
 | `checksums.txt`, `ignore.txt`, `.restore-state.json` in your folder | the same, under `/backup` | Bookkeeping, explained below. These files are never synced. |
 
+The systemd service has no mapping: it uses your folder and `post-download-hook.sh` where they are, and logs to the system journal.
+
 ### Everyday commands
 
-Run these in `backup-docker/`.
+Run the Docker commands in `backup-docker/`. The service commands work anywhere, except `./setup.py`, which runs in the project folder.
 
-| To | Run |
-| --- | --- |
-| See what it's doing | `docker compose logs -f` |
-| Stop it | `docker compose down` |
-| Start it again, or apply changed settings | `docker compose up -d --build` |
-| Change settings | `../setup.py backup`, then `docker compose up -d --build` |
-| Check the settings still work | `../setup.py check` |
-| Update to the latest version | `git pull`, then `docker compose up -d --build` |
+| To | With Docker | As a systemd service |
+| --- | --- | --- |
+| See what it's doing | `docker compose logs -f` | `sudo journalctl -u dropbox-backup -f` |
+| See whether it's running | `docker compose ps` | `sudo systemctl status dropbox-backup` |
+| Stop it | `docker compose down` | `sudo systemctl stop dropbox-backup` (it starts again at boot) |
+| Start it again | `docker compose up -d --build` | `sudo systemctl start dropbox-backup` |
+| Change settings | `../setup.py backup`, then `docker compose up -d --build` | `./setup.py service` |
+| Apply a hand-edited `.env` | `docker compose up -d` | `sudo systemctl restart dropbox-backup` |
+| Check the settings still work | `../setup.py check` | `./setup.py check` |
+| Update to the latest version | `git pull`, then `docker compose up -d --build` | `git pull`, then `./setup.py service` |
+| Remove it | `docker compose down` | `./setup.py remove-service` |
 
 ### How backups work
 
@@ -166,6 +241,8 @@ cp backup-docker/post-download-hook.sh-example backup-docker/post-download-hook.
 cd backup-docker && docker compose up -d --build
 ```
 
+A systemd service needs no rebuild: it uses the hook as soon as you save it.
+
 A failing hook is logged and the restore carries on. The hook's own edits are kept; see [How restores work](#how-restores-work).
 
 ### Time travel
@@ -182,6 +259,8 @@ docker compose exec dropbox-backup python time_travel.py "/Backups/server1/db.sq
 docker compose exec dropbox-backup python time_travel.py "/Backups/server1/db.sql" --date 2025-09-01 --execute
 ```
 
+With the systemd service, run it with the service's Python instead, in `backup-docker/`: `venv/bin/python time_travel.py "/Backups/server1/db.sql" --date 2025-09-01`.
+
 The path is the file's path in Dropbox, not on this machine. `--date` also takes a full time such as `2025-09-01T14:30:00+02:00`. `--size <bytes>` keeps only versions of exactly that size, and `--nth 2` picks the second-newest match. The restored version becomes the newest one in Dropbox, so a restore setup downloads it on its next pass.
 
 ### Syncing more than one folder
@@ -195,53 +274,33 @@ rm -f backup-docker-photos/.env
 cd backup-docker-photos && docker compose up -d --build
 ```
 
-After `git pull`, copy the updated files into each copy, leaving its `.env` alone, and rebuild it:
+For a systemd service, run `./setup.py service backup-docker-photos` instead of the last two lines. That copy's service is called `dropbox-backup-photos`.
+
+After `git pull`, copy the updated files into each copy, leaving its `.env` alone, and rebuild it. For a service, run `./setup.py service backup-docker-photos` instead of the last line.
 
 ```sh
 cd backup-docker && cp *.py Dockerfile docker-compose.yml requirements.txt ../backup-docker-photos/
 cd ../backup-docker-photos && docker compose up -d --build
 ```
 
-### Running without Docker
+### Single passes, e.g. from cron
+
+`main.py --once` makes one pass and exits, for running from cron instead of as a service. After `./setup.py backup`, make the Python environment once and try a pass:
 
 ```sh
 cd backup-docker
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
-venv/bin/python main.py --once    # one pass, to try it out
+venv/bin/python main.py --once
 ```
 
-Without Docker, `WATCH_FOLDER` is used as is; setup always saves a full path. To keep it running as a systemd service, run this from `backup-docker/`. It fills in your user and this folder:
-
-```sh
-sudo tee /etc/systemd/system/dropbox-backup.service >/dev/null <<EOF
-[Unit]
-Description=Dropbox backup/restore (backup-docker)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=$USER
-WorkingDirectory=$PWD
-ExecStart=$PWD/venv/bin/python main.py
-Restart=on-failure
-RestartSec=60
-
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload
-sudo systemctl enable --now dropbox-backup
-journalctl -u dropbox-backup -f    # follow the logs
-```
-
-Or run single passes from cron, e.g. every 15 minutes:
+Then add a line like this with `crontab -e`, for a pass every 15 minutes:
 
 ```
-*/15 * * * * cd /path/to/backup-docker && venv/bin/python main.py --once
+*/15 * * * * /path/to/backup-docker/venv/bin/python /path/to/backup-docker/main.py --once
 ```
 
-A PID file in the folder stops two copies of the same folder running at once.
+Only one copy runs at a time for each folder. A second copy, e.g. a cron pass while the last one is still going, or a manual run while the service runs, stops straight away with *already running*.
 
 ### Settings reference (`backup-docker/.env`)
 
@@ -250,7 +309,7 @@ A PID file in the folder stops two copies of the same folder running at once.
 | `APP_KEY`, `APP_SECRET` | The Dropbox app's key and secret | (setup) |
 | `DROPBOX_REFRESH_TOKEN` | The Dropbox link; setup gets it | (setup) |
 | `SYNC_DIRECTION` | `BACKUP`: this folder goes to Dropbox. `RESTORE`: the Dropbox folder comes here. | `BACKUP` |
-| `WATCH_FOLDER` | The folder on this machine. Docker mounts it at `/backup`. | required |
+| `WATCH_FOLDER` | The folder on this machine. Docker mounts it at `/backup`; the systemd service uses it directly. | required |
 | `DROPBOX_FOLDER` | The Dropbox folder: `/path`, `ns:<id>` for a shared folder, or `/` for all of Dropbox | required |
 | `SLEEP_TIME` | Seconds between passes | `60` |
 | `DEBUG_LEVEL` | `DEBUG` logs every skipped and unchanged file | `INFO` |
@@ -313,7 +372,7 @@ Setup writes `dropbox-mcp/.env` and prints the next steps with your hostname fil
    docker compose exec -w /etc/caddy caddy caddy reload
    ```
 
-The server publishes no ports, so Caddy is the only way in.
+The server publishes no ports, so Caddy is the only way in. That's also why it runs only in Docker, not as a systemd service: outside Docker it would listen on a port of this machine, and anything that could reach that port would get in without Auth0.
 
 ### B4. Give access
 
@@ -374,9 +433,15 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 | Setup says *Check the app key and secret* | Copy both again from the app's **Settings** tab. Click **Show** for the secret. |
 | Setup says *The saved Dropbox link doesn't work any more* | The link was removed, e.g. under *Settings → Connected apps* in Dropbox. Link again when setup asks. |
 | `docker compose up` says *Set WATCH_FOLDER in .env* | Run `../setup.py backup` first, from the same folder. |
+| `./setup.py service` says *systemd isn't running* | This machine doesn't use systemd, e.g. it's a container or WSL without systemd. Use Docker ([A2](#a2-start-it-with-docker)). |
+| `./setup.py service` stops at *ensurepip is not available* | Install the package that the message names, e.g. `sudo apt install python3.12-venv`, and run `./setup.py service` again. |
+| `./setup.py service` says it *can't read and write* the folder | The service runs as you, so you need access to the folder, e.g. `sudo chown -R $USER /srv/data`. Or run setup as a user who has access. |
+| `./setup.py service` says the folder *is also running in Docker* | Stop the Docker one first, with `docker compose down` in that folder, so the folder isn't synced twice at once. |
+| The service log says *Dropbox refused the saved settings* | Run `./setup.py service` again. It shows what's wrong and asks for new settings. |
+| The log says *already running* | Something else is syncing this folder, e.g. a cron job or a `main.py` you started. Only one may run at a time. |
 | The logs say *SYNC_DIRECTION must be BACKUP or RESTORE* | Fix the spelling in `.env`, or run setup again. |
 | A restore of a shared folder finds nothing | If the folder isn't added to your Dropbox, use its `ns:` path from `./setup.py shared`. |
-| Restored files belong to root | Docker runs as root. Use `chown`, or [run without Docker](#running-without-docker) as your own user. |
+| Restored files belong to root | Docker runs as root. Use `chown`, or [run it as a systemd service](#a3-or-run-it-as-a-systemd-service), which runs as you. |
 | Changes to `post-download-hook.sh` have no effect | Rebuild: `docker compose up -d --build`. |
 | The logs say *Failed to upload ... insufficient_space* | Your Dropbox is full. Failed files are retried every pass. |
 | `docker compose up` for dropbox-mcp says *network caddy-auth0 ... could not be found* | Start caddy-auth0 first. |
@@ -395,7 +460,7 @@ PATH=$PWD/venv/bin:$PATH ./run_tests.sh
 `run_tests.sh` runs the setup tests (`tests/`), then each part's own tests. Those can also run alone: `backup-docker/run_tests.sh`, which requires 95% coverage, and `dropbox-mcp/run_tests.sh`.
 
 ```
-setup.py                  interactive setup for both parts
+setup.py                  interactive setup for both parts, and the systemd service installer
 run_tests.sh              runs every test suite
 tests/                    tests for setup.py
 backup-docker/

@@ -27,3 +27,13 @@ The MCP server now always requires `WRITE_PERMISSION` for writes. An empty value
 
 ## 2026-10-19 19:13 CDT
 backup-docker now stops cleanly and can't get stuck after a crash. The `pid` package's lock is replaced by a plain `flock` that the kernel releases when the process dies. Before, after a power cut, a leftover PID file whose number now belonged to another process kept every later start failing with "already running". `pid` also exited with status 1 on SIGTERM, which made systemd mark each `systemctl stop` as a failure. SIGTERM now exits cleanly and saves the pass's progress. In Docker, that cuts `docker stop` from a 10-second timeout and SIGKILL to about a second. Restore writes `.restore-state.json` atomically, so being stopped mid-write can't corrupt it. The lock now applies in Docker too, so `docker compose exec ... main.py --once` can't overlap the running loop.
+
+## 2026-10-19 19:13 CDT
+Added `./setup.py service`, a guided installer that runs backup-docker as a systemd service instead of in Docker, and `./setup.py remove-service` to undo it.
+- **Checks first:** it confirms systemd, sudo and Python 3.8+ are available, and refuses if the same folder is also running in Docker.
+- **Sets it up:** it builds a venv, rebuilding it if the OS upgrade broke it. It keeps working settings or asks the setup questions, and checks that the service user can read and write the folder. Then it installs the packages and writes, enables and starts a unit.
+- **Confirms it:** it waits for the service's first log line and shows it, or shows the log of a service that failed to start and why.
+- **Who it runs as:** the service runs as the installing user, so restored files belong to them. Running the installer under sudo asks before installing a root service.
+- **Copies:** each copy of backup-docker gets its own service, e.g. `dropbox-backup-photos`. Re-running the installer updates settings, packages and the unit, then restarts the service.
+- **Testing:** verified end to end on real systemd 245 (Ubuntu 20.04, Python 3.8) and 255 (Ubuntu 24.04, Python 3.12). That covered a path containing spaces, a reboot, SIGKILL recovery and a missing `python3-venv`.
+- **README:** a walkthrough section, a combined Docker and systemd everyday-commands table, and troubleshooting rows. It also explains why dropbox-mcp stays Docker-only: outside Docker, its port would bypass Auth0.

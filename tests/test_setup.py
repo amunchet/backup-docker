@@ -2,8 +2,10 @@ import base64
 import json
 import os
 import stat
+import subprocess
 import sys
 import urllib.parse
+from types import SimpleNamespace
 
 import pytest
 
@@ -140,7 +142,7 @@ def test_mcp_setup_read_only_never_asks_for_write_access(dropbox, tmp_path, monk
     assert left == []
     env = setup.read_env(tmp_path / "dropbox-mcp" / ".env")
     assert (env["WRITABLE_PATHS"], env["WRITE_PERMISSION"]) == ("", "dropbox:write")
-    assert "files.content.write" not in capsys.readouterr().out
+    assert urllib.parse.urlencode({"scope": setup.MCP_SCOPES}) + "\n" in capsys.readouterr().out  # no write scope
 
 
 def test_wrong_app_secret_stops_with_a_hint(dropbox, monkeypatch):
@@ -162,3 +164,145 @@ def test_check_reports_each_part(dropbox, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Dropbox folder /Missing: path/not_found/" in out
     assert "Dropbox link: FAILED" in out
+
+
+class FakeSystem:
+    """Stands in for subprocess.run: records each command, writes and removes files like tee and rm,
+    and answers for systemd, journald and Docker."""
+
+    def __init__(self):
+        self.commands = []
+        self.state = "active"
+        self.log = "Started Dropbox backup/restore.\n[DROPBOX-BACKUP INFO] BACKUP: /data -> Dropbox /Backups/server1\n"
+        self.docker = ""
+
+    def __call__(self, command, input=None, **kwargs):
+        self.commands.append(command)
+        program, *args = command[1:] if command[0] == "sudo" else command
+        stdout = ""
+        if program == "tee":
+            with open(args[0], "w") as f:
+                f.write(input)
+        elif program == "rm":
+            os.remove(args[0])
+        elif program == "systemctl" and args[0] == "is-active":
+            stdout = self.state + "\n"
+        elif program == "journalctl":
+            stdout = self.log
+        elif program == "docker":
+            stdout = self.docker
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+
+@pytest.fixture
+def system(dropbox, tmp_path, monkeypatch):
+    """A machine that systemd runs, where setup runs as alice, who can sudo."""
+    for folder in ("run-systemd", "units", "data"):
+        (tmp_path / folder).mkdir()
+    monkeypatch.setattr(setup, "SYSTEMD", str(tmp_path / "run-systemd"))
+    monkeypatch.setattr(setup, "UNIT_DIR", str(tmp_path / "units"))
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(setup.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_name="alice"))
+    monkeypatch.setattr(setup.shutil, "which", lambda program: f"/usr/bin/{program}")
+    monkeypatch.setattr(setup.time, "sleep", lambda seconds: None)
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    fake = FakeSystem()
+    monkeypatch.setattr(setup.subprocess, "run", fake)
+    return fake
+
+
+def working_env(folder, data):
+    (folder / ".env").write_text(f"APP_KEY=key\nAPP_SECRET=secret\nDROPBOX_REFRESH_TOKEN=refresh-1\n"
+                                 f"SYNC_DIRECTION=BACKUP\nWATCH_FOLDER={data}\nDROPBOX_FOLDER=/Backups/server1\n")
+
+
+def test_service_install_sets_up_installs_and_starts_it(system, tmp_path, monkeypatch, capsys):
+    folder = tmp_path / "backup-docker"
+    python = str(folder / "venv" / "bin" / "python")
+    left = answer(monkeypatch, "key", "secret", "good-code", "backup", str(tmp_path / "data"), "/Backups/server1", "300")
+
+    setup.setup_service(setup.BACKUP_DIR)
+
+    assert left == []
+    unit = (tmp_path / "units" / "dropbox-backup.service").read_text()
+    assert "User=alice\n" in unit and f"WorkingDirectory={folder}\n" in unit
+    assert f'ExecStart="{python}" "{folder / "main.py"}"\n' in unit
+    assert [sys.executable, "-m", "venv", "--clear", str(folder / "venv")] in system.commands
+    assert [python, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "-r",
+            str(folder / "requirements.txt")] in system.commands
+    assert system.commands[-5:-2] == [["sudo", "systemctl", "daemon-reload"],
+                                      ["sudo", "systemctl", "enable", "--quiet", "dropbox-backup"],
+                                      ["sudo", "systemctl", "start", "dropbox-backup"]]
+    assert setup.read_env(folder / ".env")["WATCH_FOLDER"] == str(tmp_path / "data")
+    out = capsys.readouterr().out
+    assert "  | [DROPBOX-BACKUP INFO] BACKUP" in out and "dropbox-backup is running" in out
+    assert "sudo journalctl -u dropbox-backup -f" in out
+
+
+def test_service_keeps_working_settings_and_is_named_after_its_copy(system, tmp_path, monkeypatch, capsys):
+    copy = tmp_path / "backup-docker-photos"
+    (copy / "venv" / "bin").mkdir(parents=True)
+    (copy / "venv" / "bin" / "python").write_text("")
+    (copy / "main.py").write_text("")
+    working_env(copy, tmp_path / "data")
+    unit = tmp_path / "units" / "dropbox-backup-photos.service"
+    unit.write_text(f"WorkingDirectory={copy}\nExecStart=old\n")  # installed before
+    left = answer(monkeypatch, "y")  # keep the settings; Dropbox isn't linked again
+
+    setup.setup_service(str(copy))
+
+    assert left == []
+    assert f"WorkingDirectory={copy}\n" in unit.read_text() and "ExecStart=old" not in unit.read_text()
+    assert [sys.executable, "-m", "venv", str(copy / "venv")] in system.commands  # a working venv is kept
+    stop = system.commands.index(["sudo", "systemctl", "stop", "dropbox-backup-photos"])
+    assert system.commands[stop + 1] == ["sudo", "tee", str(unit)]  # the old one stops before it's replaced
+    assert f"./setup.py remove-service {os.path.relpath(copy)}" in capsys.readouterr().out
+
+
+def test_service_that_does_not_start_shows_why(system, tmp_path, monkeypatch, capsys):
+    working_env(tmp_path / "backup-docker", tmp_path / "data")
+    answer(monkeypatch, "y")
+    system.state, system.log = "activating", "Dropbox refused the saved settings: AuthError\n"
+    with pytest.raises(SystemExit) as exit:
+        setup.setup_service(setup.BACKUP_DIR)
+    assert "didn't start" in exit.value.code
+    assert "  | Dropbox refused the saved settings" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("situation, message", [
+    ("no systemd", "systemd isn't running"),
+    ("running in Docker", "also running in Docker"),
+    ("run with sudo", "without sudo"),
+    ("another folder's service", "Nothing was changed"),
+])
+def test_service_refuses_before_changing_anything(system, tmp_path, monkeypatch, situation, message):
+    if situation == "no systemd":
+        os.rmdir(setup.SYSTEMD)
+    elif situation == "running in Docker":
+        system.docker = "0123abcd\n"
+    elif situation == "run with sudo":
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", "alice")
+        answer(monkeypatch, "n")  # don't run it as root
+    else:
+        (tmp_path / "units" / "dropbox-backup.service").write_text("WorkingDirectory=/opt/backup-docker\n")
+        answer(monkeypatch, "n")  # don't switch it over
+    with pytest.raises(SystemExit) as exit:
+        setup.setup_service(setup.BACKUP_DIR)
+    assert message in exit.value.code
+    assert not any("tee" in command or "systemctl" in command for command in system.commands)
+
+
+def test_remove_service_stops_it_and_deletes_it(system, tmp_path, monkeypatch, capsys):
+    unit = tmp_path / "units" / "dropbox-backup.service"
+    unit.write_text(f"WorkingDirectory={tmp_path / 'backup-docker'}\n")
+    answer(monkeypatch, "y")
+
+    setup.setup_service(setup.BACKUP_DIR, remove=True)
+
+    assert not unit.exists()
+    assert system.commands == [["sudo", "systemctl", "disable", "--now", "--quiet", "dropbox-backup"],
+                               ["sudo", "rm", str(unit)], ["sudo", "systemctl", "daemon-reload"]]
+    with pytest.raises(SystemExit) as exit:
+        setup.setup_service(setup.BACKUP_DIR, remove=True)
+    assert "no dropbox-backup service" in exit.value.code
