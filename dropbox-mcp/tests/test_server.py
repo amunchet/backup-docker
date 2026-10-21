@@ -163,12 +163,33 @@ def test_with_one_folder_the_folder_itself_is_the_top(monkeypatch):
 @pytest.mark.parametrize("path", ["ns:7", "ns:42/Drawings/a.txt", "id:abc", "rev:0123456789"])
 def test_with_one_folder_nothing_outside_it_can_be_reached(dbx, monkeypatch, path):
     monkeypatch.setattr(server, "DROPBOX_FOLDER", "ns:42/Drawings")
+    monkeypatch.setattr(server, "WRITABLE_PATHS", ["ns:42/Drawings"])  # all of it
     for tool in (server.list_folder, server.get_metadata, server.read_file, lambda p: server.search("a", p)):
         with pytest.raises(ToolError, match="inside this server's folder"):
             tool(path)
-    with pytest.raises(ToolError):  # even ns:42/..., which WRITABLE_PATHS lists
+    with pytest.raises(ToolError):
         server.write_file(path, "hi", ctx("dropbox:write"))
     assert not dbx.mock_calls and not dbx.at["42"].mock_calls
+
+
+def test_with_one_folder_writable_paths_may_be_given_in_full(dbx, monkeypatch):
+    """With the folder ns:42, clients see ns:42/ai, and write to it, as /ai."""
+    monkeypatch.setattr(server, "DROPBOX_FOLDER", "ns:42")
+    monkeypatch.setattr(server, "WRITABLE_PATHS", ["ns:42/ai", "/Outbox"])
+    dbx.at["42"].files_upload.return_value = file_md("/ai/test.txt")
+
+    assert server.write_file("/ai/test.txt", "hi", ctx("dropbox:write"))["writable"] is True
+    assert dbx.at["42"].files_upload.call_args.args == (b"hi", "/ai/test.txt")
+    assert server.account_info(ctx())["writable_paths"] == ["/ai", "/Outbox"]
+    with pytest.raises(ToolError, match=r"Writable paths: /ai, /Outbox\.$"):
+        server.write_file("/notes.txt", "hi", ctx("dropbox:write"))
+
+    monkeypatch.setattr(server, "WRITABLE_PATHS", ["ns:42/"])  # all of it
+    assert server.writable_paths() == [""] and server.is_writable("/any/file.txt")
+
+    monkeypatch.setattr(server, "WRITABLE_PATHS", ["ns:420/x"])  # another folder, so never usable
+    with pytest.raises(ToolError, match="ns:420/x isn't inside DROPBOX_FOLDER ns:42"):
+        server.account_info(ctx())
 
 
 def test_with_one_folder_other_folders_are_not_listed(monkeypatch):

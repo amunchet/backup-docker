@@ -348,7 +348,7 @@ Follow [its README](https://github.com/amunchet/caddy-auth0) until its demo site
 | --- | --- |
 | Dropbox app key, app secret | From the app's **Settings** tab. If Part A is set up, its values are offered. |
 | Folder MCP clients can read | `/` for all of Dropbox. Or the one folder they may read, which becomes their top level: a path like `/Projects`, or `ns:<id>/path` for a team folder or a shared folder that isn't in your Dropbox (`./setup.py shared` lists the ids). |
-| Writable folders | Usually `-`, meaning none. Otherwise, the folders MCP clients may write to, comma-separated, and inside the folder above if you gave one (e.g. `/Outbox`). See [Reading and writing](#reading-and-writing). |
+| Writable folders | Usually `-`, meaning none. Otherwise, the folders MCP clients may write to, comma-separated, and inside the folder above if you gave one, from it (`/Outbox`) or in full (`ns:<id>/Outbox`). See [Reading and writing](#reading-and-writing). |
 | Auth0 permission to write | Asked only if something is writable. `dropbox:write` is fine. |
 | Dropbox Business team folders at the top level? | Asked only when clients can read all of Dropbox. `y` only for a Dropbox Business account whose team folders should be browsable from the top. |
 | *Link Dropbox* | As in Part A. The link only gets write access if you listed writable folders. |
@@ -409,7 +409,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 ### Reading and writing
 
 - **Paths** look like `/Folder/file.txt`, and `""` is the top of your Dropbox. A team folder, or a shared folder that isn't added to your Dropbox, is `ns:<id>/...`; `list_shared_folders` and `./setup.py shared` show the ids. With team folders at the top level (`DROPBOX_TEAM_SPACE=true`), paths start at the team's root, and your own files are under `/<your name>`.
-- **One folder only** (`DROPBOX_FOLDER`): clients see that folder as `""` and can't reach anything outside it. `ns:` and `id:` paths are refused, `list_shared_folders` isn't offered, and `WRITABLE_PATHS` are paths inside the folder. With `ns:2345678901/Drawings`, for example, `/2024/plan.pdf` is `Drawings/2024/plan.pdf` in that team folder.
+- **One folder only** (`DROPBOX_FOLDER`): clients see that folder as `""` and can't reach anything outside it. `ns:` and `id:` paths are refused, `list_shared_folders` isn't offered, and `WRITABLE_PATHS` are inside the folder, given from it (`/Outbox`) or in full (`ns:2345678901/Drawings/Outbox`). Clients see them from it. With `ns:2345678901/Drawings`, for example, `/2024/plan.pdf` is `Drawings/2024/plan.pdf` in that team folder.
 - **Everything is read-only** except inside `WRITABLE_PATHS`. Matching ignores case, as Dropbox does, and paths with `..` are refused.
 - **A folder has two forms.** A shared folder added to your Dropbox can be written to by its path (`/Team Docs`) only if that form is listed, and by its `ns:` form only if that form is listed.
 - **A write needs both** a writable path and the caller's `dropbox:write` permission. Caddy can't tell reads from writes, because every MCP call is a `POST /mcp`, so the server checks the permission itself.
@@ -421,7 +421,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 | --- | --- | --- |
 | `APP_KEY`, `APP_SECRET`, `DROPBOX_REFRESH_TOKEN` | As in Part A | (setup) |
 | `DROPBOX_FOLDER` | The only folder clients can read: `/path`, or `ns:<id>/path` in a team folder or shared folder. Empty for all of Dropbox. | all of Dropbox |
-| `WRITABLE_PATHS` | Comma-separated folders or files clients may write to, inside `DROPBOX_FOLDER` if it's set | none |
+| `WRITABLE_PATHS` | Comma-separated folders or files clients may write to, inside `DROPBOX_FOLDER` if it's set (from it, or in full) | none |
 | `WRITE_PERMISSION` | Auth0 permission needed to write | `dropbox:write` |
 | `DROPBOX_TEAM_SPACE` | `true` to browse from a Dropbox Business team's root | `false` |
 | `MAX_READ_BYTES` | Largest file `read_file` returns | `10485760` (10 MB) |

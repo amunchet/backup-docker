@@ -120,8 +120,13 @@ def dropbox_path(answer):
 
 
 def in_folder(folder, path):
-    """The Dropbox path of `path`, a path inside the MCP server's DROPBOX_FOLDER `folder` ('' for all of Dropbox)."""
-    return f"{folder}/{path.strip('/')}".rstrip("/") if folder else path
+    """
+    The Dropbox path of writable `path`, or None if it can't be inside `folder`, the MCP server's
+    DROPBOX_FOLDER ('' for all of Dropbox). Inside a folder, it's given from it (/Outbox) or in full.
+    """
+    if not folder or (path.lower().rstrip("/") + "/").startswith(folder.lower() + "/"):
+        return path
+    return f"{folder}/{path.strip('/')}".rstrip("/") if path.startswith("/") else None
 
 
 def folder_problem(token, path, team_root=None):
@@ -394,8 +399,13 @@ def setup_mcp():
     where = f"paths inside {env['DROPBOX_FOLDER']}, like /Outbox" if env["DROPBOX_FOLDER"] else "the same kind of paths"
     print(f"\nThey can write only inside the folders you list here. Use {where}. Enter - for none.")
     was_writable = bool(env.get("WRITABLE_PATHS"))
-    answer = ask("Writable folders, comma-separated", env.get("WRITABLE_PATHS", "-"))
-    env["WRITABLE_PATHS"] = "" if answer == "-" else ",".join(p.strip() for p in answer.split(",") if p.strip())
+    while True:
+        answer = ask("Writable folders, comma-separated", env.get("WRITABLE_PATHS", "-"))
+        env["WRITABLE_PATHS"] = "" if answer == "-" else ",".join(p.strip() for p in answer.split(",") if p.strip())
+        outside = [p for p in filter(None, env["WRITABLE_PATHS"].split(",")) if not in_folder(env["DROPBOX_FOLDER"], p)]
+        if not outside:
+            break
+        print(f"  {', '.join(outside)} isn't inside {env['DROPBOX_FOLDER']}.")
     if env["WRITABLE_PATHS"]:
         env["WRITE_PERMISSION"] = ask("Auth0 permission a user needs to write", env.get("WRITE_PERMISSION") or "dropbox:write")
     else:
@@ -422,7 +432,8 @@ def setup_mcp():
         env["DROPBOX_FOLDER"] = dropbox_path(ask("Folder MCP clients can read (/ for all of Dropbox)",
                                                  env["DROPBOX_FOLDER"]))
     for path in filter(None, env["WRITABLE_PATHS"].split(",")):
-        problem = folder_problem(token, in_folder(env["DROPBOX_FOLDER"], path), team_root)
+        full = in_folder(env["DROPBOX_FOLDER"], path)
+        problem = folder_problem(token, full, team_root) if full else f"isn't inside {env['DROPBOX_FOLDER']}"
         if problem and "not_folder" not in problem:
             note = " (writing a file there creates it)" if "not_found" in problem else ""
             print(f"  Writable folder {path}: {problem}{note}")
@@ -468,8 +479,10 @@ def check(folder):
             print(f"  Folder clients can read {readable}: {problem or 'OK'}")
             ok = not problem
         for path in filter(None, env.get("WRITABLE_PATHS", "").split(",")):
-            problem = folder_problem(token, in_folder(readable, path), team_root)
+            full = in_folder(readable, path)
+            problem = folder_problem(token, full, team_root) if full else f"isn't inside {readable}"
             print(f"  Writable {path}: {'OK' if not problem or 'not_folder' in problem else problem}")
+            ok = ok and bool(full)  # the server refuses to work with one outside its folder
         if not env.get("WRITABLE_PATHS"):
             print("  Writable folders: none, everything is read-only")
     else:

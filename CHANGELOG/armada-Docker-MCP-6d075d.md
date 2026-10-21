@@ -54,3 +54,9 @@ Added `DROPBOX_FOLDER` to dropbox-mcp, which limits MCP clients to one Dropbox f
 - **Hidden and writable:** `list_shared_folders` isn't offered, so other folders' names stay hidden. `WRITABLE_PATHS` become paths inside the folder.
 - **Setup:** `./setup.py mcp` asks for the folder, asking again until Dropbox finds it. It skips the team-root question when a folder is given and accepts `ns://<id>` as typed. `./setup.py check` tests the folder.
 - **Testing:** unit tests, plus the real server run over MCP against a fake Dropbox, where every call stayed inside the folder. Not yet tried against a real Dropbox account.
+
+## 2026-10-20 19:20 CDT
+Fixed writes with `DROPBOX_FOLDER` when a writable folder was given in full, like `ns:<id>/ai` with the folder `ns:<id>`.
+- **The bug:** clients' paths (`/ai/...`) never matched that entry, so every write was refused as read-only. `account_info` and the read-only error also listed the full form, which the folder limit refuses, so a client had no path that worked.
+- **Server:** writable folders inside the folder now work either from it (`/ai`) or in full, and clients only ever see their own form. An entry outside the folder can never be written, so it now makes every call fail with a message naming it instead of being silently ignored.
+- **Setup:** `./setup.py mcp` refuses writable folders outside the folder, asking again. It no longer says "writing a file there creates it" about a full-form entry, which it wrongly joined onto the folder. `./setup.py check` fails on such entries.

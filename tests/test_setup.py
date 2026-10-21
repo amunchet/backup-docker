@@ -177,6 +177,32 @@ def test_mcp_setup_can_limit_clients_to_one_folder(dropbox, tmp_path, monkeypatc
     assert "Writable folder" not in out  # ns:42/Sub exists
 
 
+def test_mcp_setup_takes_writable_folders_in_full_and_refuses_ones_outside_its_folder(dropbox, tmp_path, monkeypatch,
+                                                                                     capsys):
+    env_file = tmp_path / "dropbox-mcp" / ".env"
+    env_file.write_text("APP_KEY=key\nAPP_SECRET=secret\nDROPBOX_REFRESH_TOKEN=refresh-1\nDROPBOX_FOLDER=ns:42\n"
+                        "WRITABLE_PATHS=ns:42/Sub\n")
+    left = answer(monkeypatch, "", "", "", "ns:7/x", "ns:42/Sub", "", "", "")  # keep the rest, and the link
+
+    setup.setup_mcp()
+
+    assert left == []
+    assert setup.read_env(env_file)["WRITABLE_PATHS"] == "ns:42/Sub"
+    out = capsys.readouterr().out
+    assert "ns:7/x isn't inside ns:42." in out
+    assert "Writable folder" not in out  # ns:42/Sub exists
+
+
+@pytest.mark.parametrize("folder, path, full", [
+    ("", "ns:7/x", "ns:7/x"),
+    ("ns:42", "/Sub", "ns:42/Sub"), ("ns:42", "/", "ns:42"), ("ns:42", "ns:42/Sub", "ns:42/Sub"),
+    ("ns:42", "ns:7/x", None), ("ns:42", "ns:420/x", None),
+    ("/Projects", "/Outbox", "/Projects/Outbox"), ("/Projects", "/projects/Outbox", "/projects/Outbox"),
+])
+def test_in_folder_reads_writable_folders_from_the_mcp_folder_or_in_full(folder, path, full):
+    assert setup.in_folder(folder, path) == full
+
+
 @pytest.mark.parametrize("typed, path", [
     ("Backups/server1/", "/Backups/server1"), ("/", ""), ("ns:42", "ns:42"), ("ns://42/Sub/", "ns:42/Sub"),
 ])
@@ -212,9 +238,12 @@ def test_check_tests_the_one_folder_mcp_clients_can_read(dropbox, tmp_path, caps
     assert setup.check(setup.MCP_DIR) is True
     env_file.write_text(link + "DROPBOX_FOLDER=/Missing\n")
     assert setup.check(setup.MCP_DIR) is False
+    env_file.write_text(link + "DROPBOX_FOLDER=ns:42\nWRITABLE_PATHS=ns:42/Sub,ns:7/x\n")
+    assert setup.check(setup.MCP_DIR) is False
     out = capsys.readouterr().out
     assert "Folder clients can read ns:42: OK" in out and "Writable /Sub: OK" in out
     assert "Folder clients can read /Missing: path/not_found/" in out
+    assert "Writable ns:42/Sub: OK" in out and "Writable ns:7/x: isn't inside ns:42" in out
 
 
 class FakeSystem:
