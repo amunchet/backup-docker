@@ -454,6 +454,8 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 | `write_file` says *is read-only* | Add the folder to the writable folders with `./setup.py mcp`, then `docker compose up -d` in `dropbox-mcp`. Check whether you listed its `/path` or `ns:` form. |
 | `write_file` says *Writing needs the 'dropbox:write' permission* | Grant `dropbox:write` in Auth0, or mint a token with `-p mcp:dropbox,dropbox:write`. |
 | MCP clients get `401` or `403` | See the caddy-auth0 README's troubleshooting. `./mcp-token check <token>` tests a token. |
+| MCP clients get *Error POSTing to endpoint* | Caddy couldn't reach the server. In `dropbox-mcp`, `docker compose ps` shows whether it's running, and `docker compose logs` why not. For a few seconds while it restarts, this is normal. |
+| A tool says *Dropbox said: ...* | Dropbox refused, and the rest says why. *missing_scope*: tick that permission on the app's Permissions tab if it isn't, then run `./setup.py mcp` and link Dropbox again. *no_write_permission*: the account can't write there. Dropbox only lets apps write into a shared folder that's added to your Dropbox. |
 
 ## Development
 

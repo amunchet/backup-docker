@@ -8,7 +8,7 @@ Runs behind caddy-auth0 (https://github.com/amunchet/caddy-auth0), which
 authenticates the caller and passes their permissions in X-Auth-Permissions.
 Writes additionally need the WRITE_PERMISSION permission.
 
-Serves Streamable HTTP at /mcp on port 8000.
+Serves Streamable HTTP at /mcp on port 8000, statelessly.
 """
 import base64
 import functools
@@ -152,7 +152,19 @@ def caller(ctx: Context) -> dict:
     }
 
 
+def dropbox_errors(tool):
+    """Pass Dropbox's errors on to clients; the MCP library hides any other error's text."""
+    @functools.wraps(tool)
+    def wrapper(*args, **kwargs):
+        try:
+            return tool(*args, **kwargs)
+        except dropbox.exceptions.DropboxException as e:
+            raise ToolError(f"Dropbox said: {getattr(e, 'error', None) or e}") from e
+    return wrapper
+
+
 @mcp.tool(annotations=READ_ONLY)
+@dropbox_errors
 def account_info(ctx: Context) -> dict:
     """Show the Dropbox account, the folder clients see as '', who is calling, and which paths are writable."""
     account = dbx().users_get_current_account()
@@ -168,6 +180,7 @@ def account_info(ctx: Context) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY)
+@dropbox_errors
 def list_folder(path: str = "", recursive: bool = False) -> dict:
     """List a folder's files and subfolders. Use recursive=True to include everything below it."""
     path = clean(path)
@@ -185,6 +198,7 @@ def list_folder(path: str = "", recursive: bool = False) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY)
+@dropbox_errors
 def search(query: str, path: str = "", max_results: int = 50) -> list[dict]:
     """Search file and folder names and contents, optionally only under `path`."""
     client, inner, prefix = locate(clean(path))
@@ -194,6 +208,7 @@ def search(query: str, path: str = "", max_results: int = 50) -> list[dict]:
 
 
 @mcp.tool(annotations=READ_ONLY)
+@dropbox_errors
 def get_metadata(path: str) -> dict:
     """Show details of one file or folder."""
     path = clean(path)
@@ -202,6 +217,7 @@ def get_metadata(path: str) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY, structured_output=False)
+@dropbox_errors
 def read_file(path: str, encoding: Literal["auto", "base64"] = "auto") -> str | Image:
     """
     Read a file. encoding="auto" returns text, or the image itself for images;
@@ -225,6 +241,7 @@ def read_file(path: str, encoding: Literal["auto", "base64"] = "auto") -> str | 
 
 
 @mcp.tool(annotations=READ_ONLY)
+@dropbox_errors
 def list_shared_folders() -> list[dict]:
     """
     List every shared folder the account can access, including ones not added to
@@ -263,6 +280,7 @@ if DROPBOX_FOLDER:
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False))
+@dropbox_errors
 def write_file(path: str, content: str, ctx: Context, encoding: Literal["text", "base64"] = "text", overwrite: bool = False) -> dict:
     """
     Write a file, only inside the writable paths shown by account_info. Fails if
@@ -282,5 +300,6 @@ def write_file(path: str, content: str, ctx: Context, encoding: Literal["text", 
 
 
 if __name__ == "__main__":  # pragma: no cover
-    # Listen on all interfaces so Caddy can reach it (don't publish the port).
-    mcp.run("streamable-http", host="0.0.0.0", port=8000)
+    # Listen on all interfaces so Caddy can reach it (don't publish the port). Stateless, so each
+    # request stands alone, and clients' connections survive restarts.
+    mcp.run("streamable-http", host="0.0.0.0", port=8000, stateless_http=True)

@@ -5,6 +5,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import dropbox
 import pytest
 from dropbox.common import PathRoot
 from dropbox.files import FileMetadata, FolderMetadata, ListFolderResult
@@ -271,6 +272,28 @@ def test_list_shared_folders_merges_mounted_and_unmounted(dbx):
         ("Team", "/Shared/Team", True, True),
     ]
     assert folders[0]["access"] == "editor"
+
+
+@pytest.mark.parametrize("method, call", [
+    ("users_get_current_account", lambda: server.account_info(ctx())),
+    ("files_list_folder", lambda: server.list_folder("/a")),
+    ("files_search_v2", lambda: server.search("a")),
+    ("files_get_metadata", lambda: server.get_metadata("/a")),
+    ("files_download", lambda: server.read_file("/a")),
+    ("sharing_list_folders", lambda: server.list_shared_folders()),
+    ("files_upload", lambda: server.write_file("/Shared/Team/a.txt", "hi", ctx("dropbox:write"))),
+])
+def test_every_tool_passes_on_dropbox_errors(dbx, method, call):
+    getattr(dbx, method).side_effect = dropbox.exceptions.ApiError("rid", "path/no_write_permission", None, None)
+    with pytest.raises(ToolError, match="Dropbox said: path/no_write_permission"):
+        call()
+
+
+def test_dropbox_errors_get_past_the_mcp_library(dbx):
+    """It hides any other error's text, so the model would only hear that the tool failed."""
+    dbx.files_download.side_effect = dropbox.exceptions.AuthError("rid", "missing_scope")
+    with pytest.raises(ToolError, match="^Error executing tool read_file: Dropbox said: missing_scope$"):
+        asyncio.run(server.mcp.call_tool("read_file", {"path": "/a"}))
 
 
 def test_tools_are_registered_with_read_only_hints():
