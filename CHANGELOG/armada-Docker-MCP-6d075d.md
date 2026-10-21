@@ -57,3 +57,10 @@ Fixed writes with `DROPBOX_FOLDER` when a writable folder was given in full, lik
 - **The bug:** clients' paths (`/ai/...`) never matched that entry, so every write was refused as read-only. `account_info` and the read-only error also listed the full form, which the folder limit refuses, so a client had no path that worked.
 - **Server:** writable folders inside the folder now work either from it (`/ai`) or in full, and clients only ever see their own form. An entry outside the folder can never be written, so it now makes every call fail with a message naming it instead of being silently ignored.
 - **Setup:** `./setup.py mcp` refuses writable folders outside the folder, asking again. It no longer says "writing a file there creates it" about a full-form entry, which it wrongly joined onto the folder. `./setup.py check` fails on such entries.
+
+## 2026-10-20 19:36 CDT
+Made dropbox-mcp's failures readable, and its client connections survive restarts.
+- **Dropbox's errors reach clients:** the MCP library replaces the text of any error except its own `ToolError` with "Error executing tool …", so every Dropbox refusal reached the model without a reason. Every tool now passes Dropbox's error on, e.g. `missing_scope` or `no_write_permission`.
+- **Stateless transport:** sessions lived only in the server's memory. After a restart or redeploy, a client such as LibreChat kept failing with *Session not found* until it reconnected. Each request now stands alone, even one carrying an old session ID.
+- **Testing:** unit tests, plus the Docker image built and run with a team-folder `DROPBOX_FOLDER`. A client's session kept working across a container restart, and a write showed Dropbox's own error.
+- **README:** troubleshooting rows for *Error POSTing to endpoint* and *Dropbox said: …*.
