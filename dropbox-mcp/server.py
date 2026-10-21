@@ -102,10 +102,26 @@ def locate(path: str):
     return dbx(prefix[3:]), "/" + rest if rest else "", "" if DROPBOX_FOLDER else prefix
 
 
+def writable_paths() -> list[str]:
+    """
+    WRITABLE_PATHS as clients' paths. With DROPBOX_FOLDER set, they're inside it, given either from
+    it ('/Outbox') or in full ('ns:42/Outbox'), which then loses the folder's part.
+    """
+    paths = [clean(p) for p in WRITABLE_PATHS]
+    if not DROPBOX_FOLDER:
+        return paths
+    folder = DROPBOX_FOLDER.lower()
+    paths = [p[len(folder):] if (p.lower() + "/").startswith(folder + "/") else p for p in paths]
+    outside = [p for p in paths if p and not p.startswith("/")]
+    if outside:
+        raise ToolError(f"Server misconfigured: WRITABLE_PATHS {', '.join(outside)} isn't inside DROPBOX_FOLDER {DROPBOX_FOLDER}.")
+    return paths
+
+
 def is_writable(path: str) -> bool:
     """True if the path is inside one of WRITABLE_PATHS (case-insensitive, like Dropbox)."""
     path = clean(path).lower()
-    return any(path == w or path.startswith(w + "/") for w in (clean(w).lower() for w in WRITABLE_PATHS))
+    return any(path == w or path.startswith(w + "/") for w in (w.lower() for w in writable_paths()))
 
 
 def describe(entry, prefix: str = "", fallback_path: str | None = None) -> dict:
@@ -146,7 +162,7 @@ def account_info(ctx: Context) -> dict:
         "folder": DROPBOX_FOLDER or "/",
         "team_space": DROPBOX_TEAM_SPACE,
         "caller": who,
-        "writable_paths": WRITABLE_PATHS,
+        "writable_paths": writable_paths(),
         "caller_can_write": bool(WRITABLE_PATHS) and WRITE_PERMISSION in who["permissions"],
     }
 
@@ -256,7 +272,7 @@ def write_file(path: str, content: str, ctx: Context, encoding: Literal["text", 
     if not path.startswith(("/", "ns:")):
         raise ToolError("Give the file's full path, e.g. '/Shared/Team/notes.txt'.")
     if not is_writable(path):
-        raise ToolError(f"{path} is read-only. Writable paths: {', '.join(WRITABLE_PATHS) or 'none'}.")
+        raise ToolError(f"{path} is read-only. Writable paths: {', '.join(writable_paths()) or 'none'}.")
     if WRITE_PERMISSION not in caller(ctx)["permissions"]:
         raise ToolError(f"Writing needs the '{WRITE_PERMISSION}' permission.")
     data = base64.b64decode(content) if encoding == "base64" else content.encode("utf-8")
