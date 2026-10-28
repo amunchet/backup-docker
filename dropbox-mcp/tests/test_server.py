@@ -219,13 +219,59 @@ def test_read_file_text_image_and_binary(dbx):
     assert base64.b64decode(server.read_file("/b.bin", encoding="base64")) == b"\xff\xfe\x00"
 
 
-def test_read_file_refuses_large_files(dbx, monkeypatch):
+def ranged_download(content: bytes, name: str = "/big.txt"):
+    """A files_download fake that serves `content`, honoring Range headers like Dropbox."""
+    def download(path, extra_headers=None):
+        data = content
+        if extra_headers:
+            start, end = extra_headers["Range"].removeprefix("bytes=").split("-")
+            data = content[int(start):int(end) + 1]
+        return file_md(name, size=len(content)), MagicMock(content=data)
+    return download
+
+
+def test_read_file_reads_large_files_in_pieces(dbx, monkeypatch):
     monkeypatch.setattr(server, "MAX_READ_BYTES", 4)
-    response = MagicMock()
-    dbx.files_download.return_value = (file_md("/big.txt", size=5), response)
-    with pytest.raises(ToolError, match="limit"):
-        server.read_file("/big.txt")
-    response.close.assert_called_once()
+    dbx.files_download.side_effect = ranged_download(b"abcdefghij")
+
+    first = server.read_file("/big.txt")
+    assert first == {"content": "abcd", "encoding": "text", "size": 10, "offset": 0, "next_offset": 4, "more": True}
+    assert dbx.files_download.call_args.kwargs == {"extra_headers": {"Range": "bytes=0-3"}}
+    second = server.read_file("/big.txt", offset=4)
+    last = server.read_file("/big.txt", offset=second["next_offset"])
+    assert (second["content"], last["content"], last["more"]) == ("efgh", "ij", False)
+
+    assert server.read_file("/big.txt", offset=10) == {
+        "content": "", "encoding": "text", "size": 10, "offset": 10, "next_offset": 10, "more": False}
+    with pytest.raises(ToolError, match="offset"):
+        server.read_file("/big.txt", offset=11)
+
+
+def test_read_file_pieces_of_small_files_and_base64(dbx, monkeypatch):
+    dbx.files_download.side_effect = ranged_download(b"\xff\x00abc", "/b.bin")
+    piece = server.read_file("/b.bin", encoding="base64", offset=1, length=2)
+    assert base64.b64decode(piece["content"]) == b"\x00a"
+    assert (piece["encoding"], piece["next_offset"], piece["more"]) == ("base64", 3, True)
+    with pytest.raises(ToolError, match="base64"):
+        server.read_file("/b.bin", length=2)
+
+
+def test_read_file_pieces_never_split_a_character(dbx, monkeypatch):
+    monkeypatch.setattr(server, "MAX_READ_BYTES", 4)
+    dbx.files_download.side_effect = ranged_download("abcé".encode())  # é is 2 bytes, 4th and 5th
+    first = server.read_file("/big.txt")
+    assert (first["content"], first["next_offset"]) == ("abc", 3)
+    assert server.read_file("/big.txt", offset=3)["content"] == "é"
+    with pytest.raises(ToolError, match="one character"):
+        server.read_file("/big.txt", offset=3, length=1)
+
+
+def test_read_file_closes_the_whole_download_of_a_large_file(dbx, monkeypatch):
+    monkeypatch.setattr(server, "MAX_READ_BYTES", 4)
+    whole, piece = MagicMock(), MagicMock(content=b"abcd")
+    dbx.files_download.side_effect = [(file_md("/big.txt", size=5), whole), (file_md("/big.txt", size=5), piece)]
+    server.read_file("/big.txt")
+    whole.close.assert_called_once()
 
 
 def test_write_file_inside_writable_path(dbx):

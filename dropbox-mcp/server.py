@@ -11,6 +11,7 @@ Writes additionally need the WRITE_PERMISSION permission.
 Serves Streamable HTTP at /mcp on port 8000, statelessly.
 """
 import base64
+import codecs
 import functools
 import mimetypes
 import os
@@ -40,6 +41,7 @@ DROPBOX_TEAM_SPACE = os.getenv("DROPBOX_TEAM_SPACE", "").lower() in ("1", "true"
 WRITABLE_PATHS = [p.strip() for p in os.getenv("WRITABLE_PATHS", "").split(",") if p.strip()]
 # Permission the caller needs (from caddy-auth0) to write.
 WRITE_PERMISSION = os.getenv("WRITE_PERMISSION") or "dropbox:write"
+# Most bytes one read_file call returns; bigger files are read in several calls.
 MAX_READ_BYTES = int(os.getenv("MAX_READ_BYTES") or 10 * 1024 * 1024)
 LIST_LIMIT = int(os.getenv("LIST_LIMIT") or 2000)
 # Most bytes one write_file call carries; bigger files go up in several calls. Dropbox takes at most 150 MiB per request.
@@ -180,6 +182,7 @@ def account_info(ctx: Context) -> dict:
         "caller": who,
         "writable_paths": writable_paths(),
         "caller_can_write": bool(WRITABLE_PATHS) and WRITE_PERMISSION in who["permissions"],
+        "max_read_bytes": MAX_READ_BYTES,
         "max_write_bytes": MAX_WRITE_BYTES,
     }
 
@@ -223,17 +226,25 @@ def get_metadata(path: str) -> dict:
 
 @mcp.tool(annotations=READ_ONLY, structured_output=False)
 @dropbox_errors
-def read_file(path: str, encoding: Literal["auto", "base64"] = "auto") -> str | Image:
+def read_file(path: str, encoding: Literal["auto", "base64"] = "auto", offset: int = 0, length: int = 0) -> str | Image | dict:
     """
     Read a file. encoding="auto" returns text, or the image itself for images;
     "base64" returns any file's bytes base64-encoded.
+    A file bigger than max_read_bytes (see account_info) is read in pieces of up to
+    that many bytes: each comes back with `content`, `size`, `next_offset` and
+    `more`; call again with offset=next_offset until more is false. offset and
+    length (0 means as much as allowed) read just part of any file.
     """
     client, inner, _ = locate(clean(path))
     meta, response = client.files_download(inner)
-    if meta.size > MAX_READ_BYTES:
-        response.close()
-        raise ToolError(f"{meta.name} is {meta.size} bytes; the limit is {MAX_READ_BYTES}.")
-    data = response.content
+    if not offset and not length and meta.size <= MAX_READ_BYTES:
+        return whole_file(meta, response.content, encoding)
+    response.close()
+    return file_piece(client, inner, meta, encoding, offset, min(length or MAX_READ_BYTES, MAX_READ_BYTES))
+
+
+def whole_file(meta: FileMetadata, data: bytes, encoding: str) -> str | Image:
+    """A whole file's bytes as read_file returns them."""
     if encoding == "base64":
         return base64.b64encode(data).decode()
     mime = mimetypes.guess_type(meta.name)[0] or ""
@@ -243,6 +254,30 @@ def read_file(path: str, encoding: Literal["auto", "base64"] = "auto") -> str | 
         return data.decode("utf-8")
     except UnicodeDecodeError:
         raise ToolError(f"{meta.name} is a binary file ({mime or 'unknown type'}); use encoding='base64'.")
+
+
+def file_piece(client, inner: str, meta: FileMetadata, encoding: str, offset: int, length: int) -> dict:
+    """`length` bytes of a file from `offset`, fetched alone with an HTTP range, so any size of file can be read."""
+    if not 0 <= offset <= meta.size or length < 0:
+        raise ToolError(f"{meta.name} is {meta.size} bytes; offset must be 0 to {meta.size} and length 0 or more.")
+    data = b""
+    if offset < meta.size:
+        _, response = client.files_download(inner, extra_headers={"Range": f"bytes={offset}-{offset + length - 1}"})
+        data = response.content
+    if encoding == "base64":
+        content = base64.b64encode(data).decode()
+    else:
+        # A piece can end inside a character; leave its first bytes to the next piece.
+        try:
+            content = codecs.getincrementaldecoder("utf-8")().decode(data, final=offset + len(data) >= meta.size)
+        except UnicodeDecodeError:
+            raise ToolError(f"{meta.name} isn't UTF-8 text at offset {offset}; use encoding='base64'.")
+        data = content.encode("utf-8")
+        if not data and offset < meta.size:
+            raise ToolError(f"{length} bytes at offset {offset} of {meta.name} are less than one character; read more.")
+    next_offset = offset + len(data)
+    return {"content": content, "encoding": "base64" if encoding == "base64" else "text",
+            "size": meta.size, "offset": offset, "next_offset": next_offset, "more": next_offset < meta.size}
 
 
 @mcp.tool(annotations=READ_ONLY)
