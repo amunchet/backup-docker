@@ -20,7 +20,7 @@ from typing import Literal
 import dropbox
 from dotenv import load_dotenv
 from dropbox.common import PathRoot
-from dropbox.files import FileMetadata, FolderMetadata, SearchOptions, WriteMode
+from dropbox.files import CommitInfo, FileMetadata, FolderMetadata, SearchOptions, UploadSessionCursor, WriteMode
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.utilities.types import Image
@@ -42,6 +42,10 @@ WRITABLE_PATHS = [p.strip() for p in os.getenv("WRITABLE_PATHS", "").split(",") 
 WRITE_PERMISSION = os.getenv("WRITE_PERMISSION") or "dropbox:write"
 MAX_READ_BYTES = int(os.getenv("MAX_READ_BYTES") or 10 * 1024 * 1024)
 LIST_LIMIT = int(os.getenv("LIST_LIMIT") or 2000)
+# Most bytes one write_file call carries; bigger files go up in several calls. Dropbox takes at most 150 MiB per request.
+MAX_WRITE_BYTES = int(os.getenv("MAX_WRITE_BYTES") or 100 * 1024 * 1024)
+if not 0 < MAX_WRITE_BYTES <= 150 * 1024 * 1024:
+    raise SystemExit(f"MAX_WRITE_BYTES must be between 1 and {150 * 1024 * 1024} (150 MiB), not {MAX_WRITE_BYTES}.")
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
@@ -176,6 +180,7 @@ def account_info(ctx: Context) -> dict:
         "caller": who,
         "writable_paths": writable_paths(),
         "caller_can_write": bool(WRITABLE_PATHS) and WRITE_PERMISSION in who["permissions"],
+        "max_write_bytes": MAX_WRITE_BYTES,
     }
 
 
@@ -281,10 +286,15 @@ if DROPBOX_FOLDER:
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False))
 @dropbox_errors
-def write_file(path: str, content: str, ctx: Context, encoding: Literal["text", "base64"] = "text", overwrite: bool = False) -> dict:
+def write_file(path: str, content: str, ctx: Context, encoding: Literal["text", "base64"] = "text", overwrite: bool = False,
+               more: bool = False, upload_id: str = "", offset: int = 0) -> dict:
     """
     Write a file, only inside the writable paths shown by account_info. Fails if
     the file exists unless overwrite=True. encoding is "text" or "base64".
+    Each call carries at most max_write_bytes (see account_info). Write a bigger
+    file in pieces, in order, each with the same path: the first with more=True,
+    which returns an upload_id; the next ones with that upload_id, the offset it
+    returned, and more=True; the last one with more=False, which saves the file.
     """
     path = clean(path)
     if not path.startswith(("/", "ns:")):
@@ -294,12 +304,28 @@ def write_file(path: str, content: str, ctx: Context, encoding: Literal["text", 
     if WRITE_PERMISSION not in caller(ctx)["permissions"]:
         raise ToolError(f"Writing needs the '{WRITE_PERMISSION}' permission.")
     data = base64.b64decode(content) if encoding == "base64" else content.encode("utf-8")
+    if len(data) > MAX_WRITE_BYTES:
+        raise ToolError(f"This piece is {len(data)} bytes; the limit is {MAX_WRITE_BYTES} per call. Send it in pieces with more=True.")
     mode = WriteMode.overwrite if overwrite else WriteMode.add
     client, inner, prefix = locate(path)
+    # Pieces wait in an upload session at Dropbox, so the server keeps nothing between calls.
+    if more and not upload_id:
+        if offset:
+            raise ToolError("The first piece starts at offset 0; give upload_id to continue an upload.")
+        return {"upload_id": client.files_upload_session_start(data).session_id, "offset": len(data)}
+    if upload_id:
+        cursor = UploadSessionCursor(upload_id, offset)
+        if more:
+            client.files_upload_session_append_v2(data, cursor)
+            return {"upload_id": upload_id, "offset": offset + len(data)}
+        commit = CommitInfo(inner, mode=mode, autorename=False)
+        return describe(client.files_upload_session_finish(data, cursor, commit), prefix)
     return describe(client.files_upload(data, inner, mode=mode, autorename=False), prefix)
 
 
 if __name__ == "__main__":  # pragma: no cover
     # Listen on all interfaces so Caddy can reach it (don't publish the port). Stateless, so each
     # request stands alone, and clients' connections survive restarts.
-    mcp.run("streamable-http", host="0.0.0.0", port=8000, stateless_http=True)
+    # Requests may carry a whole write_file piece, base64-encoded (4/3 its size), plus room for the JSON around it.
+    mcp.run("streamable-http", host="0.0.0.0", port=8000, stateless_http=True,
+            max_request_body_size=MAX_WRITE_BYTES * 4 // 3 + 1024 * 1024)

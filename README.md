@@ -411,6 +411,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 - **Everything is read-only** except inside `WRITABLE_PATHS`. Matching ignores case, as Dropbox does, and paths with `..` are refused.
 - **A folder has two forms.** A shared folder added to your Dropbox can be written to by its path (`/Team Docs`) only if that form is listed, and by its `ns:` form only if that form is listed.
 - **A write needs both** a writable path and the caller's `dropbox:write` permission. Caddy can't tell reads from writes, because every MCP call is a `POST /mcp`, so the server checks the permission itself.
+- **Big files go up in pieces.** One `write_file` call carries at most `MAX_WRITE_BYTES` (100 MiB by default, shown by `account_info`), so a file of several GB is written in a series of calls with the same path: the first with `more=true` returns an `upload_id`, each next one passes that `upload_id`, the `offset` the previous call returned and `more=true`, and the last one passes `more=false`, which saves the file. The pieces wait at Dropbox (for up to 7 days, and up to 350 GB in all), so a server restart in the middle doesn't lose them. A wrong `offset` gets Dropbox's *incorrect_offset* error, which names the right one. Uploads this size are for scripts and programs. A chat model can't type out gigabytes of base64.
 - **Nothing writable** means setup links Dropbox without write access at all. Even the server's own Dropbox link can't change anything.
 
 ### Settings reference (`dropbox-mcp/.env`)
@@ -424,6 +425,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 | `DROPBOX_TEAM_SPACE` | `true` to browse from a Dropbox Business team's root | `false` |
 | `MAX_READ_BYTES` | Largest file `read_file` returns | `10485760` (10 MB) |
 | `LIST_LIMIT` | Most entries `list_folder` returns | `2000` |
+| `MAX_WRITE_BYTES` | Most bytes one `write_file` call carries; bigger files go in pieces. At most `157286400` (150 MiB), Dropbox's limit per request. The server holds a few times this in memory per call. | `104857600` (100 MiB) |
 | `MCP_HOST` | The public hostname; only setup uses it | none |
 
 ## Troubleshooting
@@ -452,6 +454,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 | `write_file` says *is read-only* | Add the folder to the writable folders with `./setup.py mcp`, then `docker compose up -d` in `dropbox-mcp`. Check whether you listed its `/path` or `ns:` form. |
 | `write_file` says *Writing needs the 'dropbox:write' permission* | Grant `dropbox:write` in Auth0, or mint a token with `-p mcp:dropbox,dropbox:write`. |
 | MCP clients get `401` or `403` | See the caddy-auth0 README's troubleshooting. `./mcp-token check <token>` tests a token. |
+| `write_file` gets *413 Request body too large* | The piece is over `MAX_WRITE_BYTES`. Send smaller pieces (see *Big files go up in pieces*), or raise the setting. |
 | MCP clients get *Error POSTing to endpoint* | Caddy couldn't reach the server. In `dropbox-mcp`, `docker compose ps` shows whether it's running, and `docker compose logs` why not. For a few seconds while it restarts, this is normal. |
 | A tool says *Dropbox said: ...* | Dropbox refused, and the rest says why. *missing_scope*: tick that permission on the app's Permissions tab if it isn't, then run `./setup.py mcp` and link Dropbox again. *no_write_permission*: the account can't write there. Dropbox only lets apps write into a shared folder that's added to your Dropbox. |
 

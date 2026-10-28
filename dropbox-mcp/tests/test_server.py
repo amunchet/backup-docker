@@ -250,6 +250,57 @@ def test_write_file_refusals(dbx, path, permissions, message):
     dbx.files_upload.assert_not_called()
 
 
+def test_big_files_are_written_in_pieces(dbx):
+    """A file too big for one call goes up in several, held at Dropbox until the last one saves it."""
+    dbx.files_upload_session_start.return_value = SimpleNamespace(session_id="s1")
+    dbx.files_upload_session_finish.return_value = file_md("/Shared/Team/big.bin", size=9)
+    piece = lambda data: base64.b64encode(data).decode()
+    write = lambda data, **kw: server.write_file("/Shared/Team/big.bin", piece(data), ctx("dropbox:write"), encoding="base64", **kw)
+
+    assert write(b"abc", more=True) == {"upload_id": "s1", "offset": 3}
+    assert write(b"def", more=True, upload_id="s1", offset=3) == {"upload_id": "s1", "offset": 6}
+    result = write(b"ghi", upload_id="s1", offset=6, overwrite=True)
+
+    dbx.files_upload_session_start.assert_called_once_with(b"abc")
+    data, cursor = dbx.files_upload_session_append_v2.call_args.args
+    assert (data, cursor.session_id, cursor.offset) == (b"def", "s1", 3)
+    data, cursor, commit = dbx.files_upload_session_finish.call_args.args
+    assert (data, cursor.offset, commit.path, commit.mode) == (b"ghi", 6, "/Shared/Team/big.bin", server.WriteMode.overwrite)
+    assert result["path"] == "/Shared/Team/big.bin" and result["size"] == 9
+    dbx.files_upload.assert_not_called()
+
+
+def test_pieces_are_checked_like_whole_files(dbx):
+    """Every piece, not just the first, must be writable by this caller, so a finish can't land elsewhere."""
+    with pytest.raises(ToolError, match="read-only"):
+        server.write_file("/Private/big.bin", "x", ctx("dropbox:write"), upload_id="s1", offset=3)
+    with pytest.raises(ToolError, match="permission"):
+        server.write_file("/Shared/Team/big.bin", "x", ctx(), more=True, upload_id="s1", offset=3)
+    with pytest.raises(ToolError, match="offset 0"):
+        server.write_file("/Shared/Team/big.bin", "x", ctx("dropbox:write"), more=True, offset=3)
+    dbx.files_upload_session_finish.assert_not_called()
+    dbx.files_upload_session_append_v2.assert_not_called()
+    dbx.files_upload_session_start.assert_not_called()
+
+
+def test_write_file_refuses_pieces_over_the_limit(dbx, monkeypatch):
+    monkeypatch.setattr(server, "MAX_WRITE_BYTES", 4)
+    with pytest.raises(ToolError, match="more=True"):
+        server.write_file("/Shared/Team/a.txt", "hello", ctx("dropbox:write"))
+    dbx.files_upload.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["0", str(150 * 1024 * 1024 + 1)])
+def test_max_write_bytes_beyond_what_dropbox_takes_stops_the_server(monkeypatch, value):
+    monkeypatch.setenv("MAX_WRITE_BYTES", value)
+    try:
+        with pytest.raises(SystemExit, match="MAX_WRITE_BYTES"):
+            importlib.reload(server)
+    finally:
+        monkeypatch.delenv("MAX_WRITE_BYTES")
+        importlib.reload(server)
+
+
 def test_write_file_without_caddy_headers_is_refused(dbx):
     with pytest.raises(ToolError, match="permission"):
         server.write_file("/Shared/Team/notes.txt", "hi", SimpleNamespace(headers=None))
@@ -282,6 +333,8 @@ def test_list_shared_folders_merges_mounted_and_unmounted(dbx):
     ("files_download", lambda: server.read_file("/a")),
     ("sharing_list_folders", lambda: server.list_shared_folders()),
     ("files_upload", lambda: server.write_file("/Shared/Team/a.txt", "hi", ctx("dropbox:write"))),
+    ("files_upload_session_append_v2",
+     lambda: server.write_file("/Shared/Team/a.txt", "hi", ctx("dropbox:write"), more=True, upload_id="s", offset=2)),
 ])
 def test_every_tool_passes_on_dropbox_errors(dbx, method, call):
     getattr(dbx, method).side_effect = dropbox.exceptions.ApiError("rid", "path/no_write_permission", None, None)
