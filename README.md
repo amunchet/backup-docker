@@ -326,7 +326,7 @@ dropbox-mcp is an MCP server (Streamable HTTP, at `/mcp`) that gives clients suc
 | `list_folder` | A folder's contents, optionally everything below it |
 | `search` | Search file and folder names and contents, optionally under one folder |
 | `get_metadata` | Details of one file or folder |
-| `read_file` | A file's text, or the image itself for images, or base64 for anything else (up to 10 MB) |
+| `read_file` | A file's text, or the image itself for images, or base64 for anything else. Files over `MAX_READ_BYTES` are read in pieces, any size. |
 | `list_shared_folders` | Every shared folder the account can reach, including ones not added to it. Not offered when clients can read only one folder. |
 | `write_file` | Create a file, or replace one with `overwrite`, inside a writable folder. The only tool that changes anything. |
 
@@ -411,6 +411,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 - **Everything is read-only** except inside `WRITABLE_PATHS`. Matching ignores case, as Dropbox does, and paths with `..` are refused.
 - **A folder has two forms.** A shared folder added to your Dropbox can be written to by its path (`/Team Docs`) only if that form is listed, and by its `ns:` form only if that form is listed.
 - **A write needs both** a writable path and the caller's `dropbox:write` permission. Caddy can't tell reads from writes, because every MCP call is a `POST /mcp`, so the server checks the permission itself.
+- **Big files are read in pieces.** A file over `MAX_READ_BYTES` (10 MiB by default, shown by `account_info`) comes back as its first piece, with `size`, `next_offset` and `more`. Calling `read_file` again with `offset` set to `next_offset` returns the next piece, until `more` is false. Dropbox sends only the asked-for bytes, so a file of any size works and the server never holds more than one piece. `offset` and `length` also read just part of any file, e.g. the end of a log. Text pieces never split a character.
 - **Big files go up in pieces.** One `write_file` call carries at most `MAX_WRITE_BYTES` (100 MiB by default, shown by `account_info`), so a file of several GB is written in a series of calls with the same path: the first with `more=true` returns an `upload_id`, each next one passes that `upload_id`, the `offset` the previous call returned and `more=true`, and the last one passes `more=false`, which saves the file. The pieces wait at Dropbox (for up to 7 days, and up to 350 GB in all), so a server restart in the middle doesn't lose them. A wrong `offset` gets Dropbox's *incorrect_offset* error, which names the right one. Uploads this size are for scripts and programs. A chat model can't type out gigabytes of base64.
 - **Nothing writable** means setup links Dropbox without write access at all. Even the server's own Dropbox link can't change anything.
 
@@ -423,7 +424,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 | `WRITABLE_PATHS` | Comma-separated folders or files clients may write to, inside `DROPBOX_FOLDER` if it's set (from it, or in full) | none |
 | `WRITE_PERMISSION` | Auth0 permission needed to write | `dropbox:write` |
 | `DROPBOX_TEAM_SPACE` | `true` to browse from a Dropbox Business team's root | `false` |
-| `MAX_READ_BYTES` | Largest file `read_file` returns | `10485760` (10 MB) |
+| `MAX_READ_BYTES` | Most bytes one `read_file` call returns; bigger files are read in pieces | `10485760` (10 MB) |
 | `LIST_LIMIT` | Most entries `list_folder` returns | `2000` |
 | `MAX_WRITE_BYTES` | Most bytes one `write_file` call carries; bigger files go in pieces. At most `157286400` (150 MiB), Dropbox's limit per request. The server holds a few times this in memory per call. | `104857600` (100 MiB) |
 | `MCP_HOST` | The public hostname; only setup uses it | none |
