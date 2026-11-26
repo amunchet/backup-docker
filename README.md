@@ -56,6 +56,8 @@ backup-docker runs in the background and makes a pass every few minutes:
 
 Neither direction ever deletes anything. Dropbox also keeps old versions, which [time travel](#time-travel) can bring back.
 
+Outages don't stop it. While Dropbox can't be reached, e.g. the network or DNS is down, each pass logs one line saying why, and the next pass tries again. Only if passes keep failing for an hour does it exit, so Docker or systemd restarts it. Settings that Dropbox refuses stop it straight away.
+
 You can run it with Docker ([A1](#a1-run-setup), then [A2](#a2-start-it-with-docker)), or as a systemd service ([A3](#a3-or-run-it-as-a-systemd-service)). Pick one for each folder, never both, so the folder isn't synced twice at once.
 
 ### A1. Run setup
@@ -451,6 +453,7 @@ To have each LibreChat user connect as themselves instead, see "Connecting Libre
 | Restored files belong to root | Docker runs as root. Use `chown`, or [run it as a systemd service](#a3-or-run-it-as-a-systemd-service), which runs as you. |
 | Changes to `post-download-hook.sh` have no effect | Rebuild: `docker compose up -d --build`. |
 | The logs say *Failed to upload ... insufficient_space* | Your Dropbox is full. Failed files are retried every pass. |
+| The logs say *pass failed, trying again* with *Failed to resolve 'api.dropboxapi.com'* or *Network is unreachable* | This machine can't reach Dropbox, e.g. its network or DNS is down. It keeps trying and catches up once Dropbox can be reached. If that takes over an hour, it exits with *passes have failed for 60 minutes* and is restarted. |
 | `docker compose up` for dropbox-mcp says *network caddy-auth0 ... could not be found* | Start caddy-auth0 first. |
 | `write_file` says *is read-only* | Add the folder to the writable folders with `./setup.py mcp`, then `docker compose up -d` in `dropbox-mcp`. Check whether you listed its `/path` or `ns:` form. |
 | `write_file` says *Writing needs the 'dropbox:write' permission* | Grant `dropbox:write` in Auth0, or mint a token with `-p mcp:dropbox,dropbox:write`. |
