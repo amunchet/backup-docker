@@ -365,7 +365,7 @@ WantedBy=multi-user.target
     for command in (["daemon-reload"], ["enable", "--quiet", name], ["start", name]):
         subprocess.run(sudo + ["systemctl"] + command, check=True)
 
-    # Bad settings stop it within seconds, and its first log line means Dropbox let it in.
+    # Bad settings stop it within seconds, and its first log line says whether it reached Dropbox.
     for _ in range(20):
         time.sleep(1)
         state = subprocess.run(sudo + ["systemctl", "is-active", name], capture_output=True, text=True).stdout.strip()

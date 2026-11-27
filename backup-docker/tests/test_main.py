@@ -5,12 +5,16 @@ from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import pytest
+import requests
 from dropbox.common import PathRoot
-from dropbox.exceptions import BadInputError
+from dropbox.exceptions import AuthError, BadInputError, InternalServerError
 
 import backup
 import main
 import restore
+
+# What a pass sees while the network or DNS is down.
+DOWN = requests.exceptions.ConnectionError("Failed to resolve 'api.dropboxapi.com'")
 
 
 @pytest.fixture
@@ -88,6 +92,77 @@ def test_a_failed_pass_does_not_stop_the_loop(settings, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         main.main()
     assert settings["backup"].call_count == 3
+
+
+@pytest.fixture
+def clock(settings, monkeypatch):
+    """Running until stopped, with a fake clock that sleeping moves on: a pass every 10s, giving up after 30s."""
+    now = [0]
+
+    def sleep(seconds):
+        now[0] += seconds
+        if now[0] > 1000:  # pytest.fail isn't an Exception, so the loop can't swallow it
+            pytest.fail("Still running after 1000s")
+    monkeypatch.setattr(main.time, "sleep", sleep)
+    monkeypatch.setattr(main.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(main, "SLEEP_TIME", 10)
+    monkeypatch.setattr(main, "GIVE_UP_AFTER", 30)
+    monkeypatch.setattr(sys, "argv", ["main.py"])
+    return now
+
+
+def dropbox_answers(monkeypatch, *answers):
+    """A fake Dropbox whose account check gives these answers in turn, raising the exceptions."""
+    dbx = MagicMock()
+    dbx.users_get_current_account.side_effect = answers
+    monkeypatch.setattr(main, "dropbox_client", lambda: dbx)
+
+
+def test_an_outage_at_startup_is_waited_out(settings, monkeypatch, clock):
+    """E.g. a reboot, before the network or DNS is up: it keeps trying, instead of exiting into a restart."""
+    dropbox_answers(monkeypatch, DOWN, InternalServerError("req", 503, ""), MagicMock(), KeyboardInterrupt)
+    with pytest.raises(KeyboardInterrupt):
+        main.main()
+    assert settings["backup"].call_count == 1
+
+
+def test_failing_past_the_limit_exits_so_it_is_restarted(settings, monkeypatch, clock):
+    dropbox_answers(monkeypatch, *[DOWN] * 10)
+    with pytest.raises(SystemExit) as exit:
+        main.main()
+    assert "failed for" in exit.value.code and "Failed to resolve" in exit.value.code
+    assert clock[0] == 30 and not settings["backup"].called
+
+
+def test_outages_with_a_good_pass_between_them_never_add_up(settings, monkeypatch, clock):
+    dropbox_answers(monkeypatch, DOWN, DOWN, DOWN, MagicMock(), DOWN, DOWN, DOWN, MagicMock(), KeyboardInterrupt)
+    with pytest.raises(KeyboardInterrupt):
+        main.main()
+    assert settings["backup"].call_count == 2
+
+
+def test_settings_refused_while_running_stop_it_at_once(settings, monkeypatch, clock):
+    """E.g. the Dropbox link was removed: waiting can't fix that, and a service that keeps exiting shows it."""
+    dropbox_answers(monkeypatch, MagicMock(), AuthError("req", "invalid_access_token"))
+    with pytest.raises(SystemExit) as exit:
+        main.main()
+    assert "setup.py check" in exit.value.code
+    assert settings["backup"].call_count == 1
+
+
+def test_once_reports_an_outage_straight_away(settings, monkeypatch):
+    """A single pass, e.g. from cron, fails rather than waiting out the outage."""
+    dropbox_answers(monkeypatch, DOWN)
+    with pytest.raises(requests.exceptions.ConnectionError):
+        main.main()
+    assert not settings["backup"].called
+
+
+def test_an_outage_is_logged_in_one_line_and_a_bug_with_its_traceback(settings, clock, caplog):
+    settings["backup"].side_effect = [DOWN, KeyError("bug"), KeyboardInterrupt]
+    with pytest.raises(KeyboardInterrupt):
+        main.main()
+    assert [bool(r.exc_info) for r in caplog.records if r.levelname == "ERROR"] == [False, True]
 
 
 def test_a_second_copy_refuses_to_start():
